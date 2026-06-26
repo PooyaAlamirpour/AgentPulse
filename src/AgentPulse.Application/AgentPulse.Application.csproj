@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>AgentPulse.Application</AssemblyName>
+    <RootNamespace>AgentPulse.Application</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentPulse.Domain\AgentPulse.Domain.csproj" />
+  </ItemGroup>
+</Project>

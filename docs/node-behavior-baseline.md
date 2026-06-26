@@ -2,7 +2,7 @@
 
 ## 1. هدف و مرز سند
 
-این سند رفتارهای قابل مشاهده مسیر `mimo run` و قراردادهای داده‌ای مرتبط را از Snapshot موجود در آرشیو `MiMo-Code(1).7z` ثبت می‌کند تا بازنویسی .NET بر اساس حدس انجام نشود.
+این سند رفتارهای قابل مشاهده مسیر `agentpulse run` و قراردادهای داده‌ای مرتبط را از Snapshot موجود در آرشیو `AgentPulse-Code(1).7z` ثبت می‌کند تا بازنویسی .NET بر اساس حدس انجام نشود.
 
 این سند کد Production تولید نمی‌کند و تصمیم معماری جدید را قطعی اعلام نمی‌کند. پیشنهادهای معماری تأییدنشده فقط در `docs/architecture-decisions.md` ثبت شده‌اند.
 
@@ -25,7 +25,7 @@ CLI
 
 در این سند از سه برچسب استفاده می‌شود:
 
-- **قطعی از مسیر اجرایی سورس**: مستقیماً از کدی که در مسیر `mimo run` اجرا می‌شود قابل اثبات است.
+- **قطعی از مسیر اجرایی سورس**: مستقیماً از کدی که در مسیر `agentpulse run` اجرا می‌شود قابل اثبات است.
 - **استنباطی / نیازمند منبع کامل یا آزمون Black-box**: از فایل‌های موجود نتیجه قطعی قابل استخراج نیست یا نتیجه به Runtime و سیستم‌عامل وابسته است.
 - **خارج از Scope نسخه اولیه .NET**: در Node وجود دارد، اما در برنامه مصوب فازهای ۰ تا ۹ پیاده‌سازی نمی‌شود.
 
@@ -53,7 +53,7 @@ packages/opencode/src/provider/provider.ts
 
 ### 3.2 بررسی صریح مسیر Storage
 
-در بررسی مستقیم فهرست `MiMo-Code(1).7z`، برخلاف ادعای غیبت، مسیر و فایل‌های زیر **واقعاً موجود و قابل استخراج‌اند**:
+در بررسی مستقیم فهرست `AgentPulse-Code(1).7z`، برخلاف ادعای غیبت، مسیر و فایل‌های زیر **واقعاً موجود و قابل استخراج‌اند**:
 
 ```text
 packages/opencode/src/storage/
@@ -88,7 +88,7 @@ packages/opencode/src/session/session.sql.ts
 **قطعی از مسیر اجرایی سورس**
 
 ```bash
-mimo run [message..]
+agentpulse run [message..]
 ```
 
 منبع:
@@ -116,10 +116,10 @@ packages/opencode/src/cli/cmd/run.ts:213-290
 در برنامه مصوب فازهای ۰ تا ۹ فقط این ورودی‌ها برای جریان نهایی فاز ۸ در Scope هستند:
 
 ```text
-mimo run "prompt"
-mimo run --dir <path> "prompt"
-mimo run --model <model> "prompt"
-mimo run --session <id> "prompt"
+agentpulse run "prompt"
+agentpulse run --dir <path> "prompt"
+agentpulse run --model <model> "prompt"
+agentpulse run --session <id> "prompt"
 ```
 
 Prompt از `stdin` نیز در Scope است.
@@ -404,7 +404,7 @@ packages/opencode/src/cli/cmd/run-completion.ts:22-76
 
 **قطعی از مسیر اجرایی سورس**
 
-در حالت `default`، متن فقط وقتی چاپ می‌شود که `TextPart` دارای `time.end` باشد. بنابراین کد فعلی `mimo run` الزاماً هر Token/Delta را بلافاصله چاپ نمی‌کند.
+در حالت `default`، متن فقط وقتی چاپ می‌شود که `TextPart` دارای `time.end` باشد. بنابراین کد فعلی `agentpulse run` الزاماً هر Token/Delta را بلافاصله چاپ نمی‌کند.
 
 منبع:
 
@@ -531,7 +531,7 @@ packages/opencode/src/index.ts:248-261
 ### داخل Scope
 
 ```text
-CLI command: mimo run
+CLI command: agentpulse run
 Prompt از Argument و stdin
 --dir
 --model

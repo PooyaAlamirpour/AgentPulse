@@ -1,3 +1,7 @@
-AgentPulse/obj/
+**/bin/
+**/obj/
+.vs/
 .idea/
-AgentPulse/bin/
+TestResults/
+*.user
+*.suo

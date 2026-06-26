@@ -35,7 +35,7 @@ packages/opencode/src/storage/schema.ts
 - Referenceهای یک‌طرفه
 - nullable و TreatWarningsAsErrors
 - Generic Host، DI، Options و Logging
-- Command پایه `mimo run`
+- Command پایه `agentpulse run`
 - Prompt از Argument و stdin
 - سیم‌کشی `Ctrl+C`
 - بدون دیتابیس، Session و Provider
@@ -146,13 +146,13 @@ Metrics/Telemetry/Control Plane
 
 | رفتار یا قرارداد | منبع Node | فاز مصوب | مقصد .NET |
 |---|---|---:|---|
-| Parse فرمان `mimo run` | `cli/cmd/run.ts` | ۱ | `Mimo.Cli` / Run command |
+| Parse فرمان `agentpulse run` | `cli/cmd/run.ts` | ۱ | `AgentPulse.Cli` / Run command |
 | Prompt از Argument | `cli/cmd/run.ts` | ۱ | `PromptInputReader` یا handler کوچک CLI |
 | Prompt از stdin | `cli/cmd/run.ts` | ۱ | `PromptInputReader` |
 | ورودی خالی و usage error | `cli/cmd/run.ts` | ۱ و ۹ | CLI validation + process integration test |
 | اتصال Ctrl+C به CancellationToken | prompt/processor/llm + CLI runtime | ۱ | Composition Root |
-| Project/Session/Message/Part contracts | `message-v2.ts`، SQL schemaها | ۲ | `Mimo.Domain` |
-| SQLite schema و Migration | `storage/*` و `*.sql.ts` | ۲ | `Mimo.Infrastructure.Persistence` |
+| Project/Session/Message/Part contracts | `message-v2.ts`، SQL schemaها | ۲ | `AgentPulse.Domain` |
+| SQLite schema و Migration | `storage/*` و `*.sql.ts` | ۲ | `AgentPulse.Infrastructure.Persistence` |
 | Project Context و Git/worktree | `project/*` و `instance.ts` | ۳ | `IProjectContextResolver` + `IGitClient` |
 | ساخت Session | `session/session.ts` و `run.ts` | ۴ | `CreateSession` |
 | ادامه با Session ID | `run.ts` و Session service | ۴ | `ContinueSession` |
@@ -169,7 +169,7 @@ Metrics/Telemetry/Control Plane
 | OpenAI-compatible HTTP | provider/config/auth files | ۷ | `OpenAiCompatibleChatModelClient` |
 | SSE parser | Provider/LLM transport | ۷ | parser مستقل و قابل تست |
 | Orchestrator نهایی | `run.ts` + prompt/processor | ۸ | `RunPrompt` |
-| CLI end-to-end واقعی | `run.ts` | ۸ | `Mimo.Cli` composition |
+| CLI end-to-end واقعی | `run.ts` | ۸ | `AgentPulse.Cli` composition |
 | Exit Code/stdout/stderr parity | `run.ts` و `index.ts` | ۹ | Process integration tests |
 | Ctrl+C و Crash Recovery process-level | runtime + Persistence | ۹ | CLI integration tests |
 
@@ -300,7 +300,7 @@ RunPrompt
 ### فاز ۲ — EF Core و SQLite
 
 ```text
-MimoDbContext
+AgentPulseDbContext
 ProjectRepository
 SessionRepository
 MessageRepository
@@ -356,7 +356,7 @@ CLI فقط این مسئولیت‌ها را دارد:
 ```text
 Composition Root
 DI/Configuration bootstrap
-parse mimo run
+parse agentpulse run
 read Argument/stdin
 validate empty input
 Ctrl+C → CancellationToken
@@ -381,28 +381,28 @@ Process واقعی CLI برای Interactive/Non-Interactive، stdin، Ctrl+C، p
 
 | رفتار | Test project | فاز |
 |---|---|---:|
-| Prompt argument parsing | `Mimo.Cli.IntegrationTests` یا تست parser | ۱ |
-| stdin input | `Mimo.Cli.IntegrationTests` | ۱ و ۹ |
-| empty input | `Mimo.Cli.IntegrationTests` | ۱ و ۹ |
+| Prompt argument parsing | `AgentPulse.Cli.IntegrationTests` یا تست parser | ۱ |
+| stdin input | `AgentPulse.Cli.IntegrationTests` | ۱ و ۹ |
+| empty input | `AgentPulse.Cli.IntegrationTests` | ۱ و ۹ |
 | dependency direction | Architecture test یا build graph | ۱ |
-| Domain invariants | `Mimo.Domain.Tests` | ۲ |
-| SQLite CRUD/relations/migration | `Mimo.Infrastructure.Tests` | ۲ |
+| Domain invariants | `AgentPulse.Domain.Tests` | ۲ |
+| SQLite CRUD/relations/migration | `AgentPulse.Infrastructure.Tests` | ۲ |
 | deterministic message sequence | Domain/Application/Infrastructure tests | ۲ و ۴ |
-| Git root/worktree/non-Git | `Mimo.Infrastructure.Tests` | ۳ |
-| create/continue-by-id Session | `Mimo.Application.Tests` | ۴ |
-| Session belongs to Project | `Mimo.Application.Tests` | ۴ |
+| Git root/worktree/non-Git | `AgentPulse.Infrastructure.Tests` | ۳ |
+| create/continue-by-id Session | `AgentPulse.Application.Tests` | ۴ |
+| Session belongs to Project | `AgentPulse.Application.Tests` | ۴ |
 | single active Run per Session | Application + SQLite integration | ۴ |
 | interrupted Session recovery | Infrastructure/Application integration | ۴ و ۹ |
-| request order and no duplicate prompt | `Mimo.Application.Tests` | ۵ |
-| failed/cancelled history policy | `Mimo.Application.Tests` | ۵ |
+| request order and no duplicate prompt | `AgentPulse.Application.Tests` | ۵ |
+| failed/cancelled history policy | `AgentPulse.Application.Tests` | ۵ |
 | Hel + lo → Hello | Application end-to-end with Fake Provider | ۶ |
 | cancellation keeps partial text | Application end-to-end | ۶ |
 | stream failure keeps partial text | Application end-to-end | ۶ |
-| fragmented/multiline SSE and `[DONE]` | `Mimo.Infrastructure.Tests` | ۷ |
-| HTTP cancellation and secret redaction | `Mimo.Infrastructure.Tests` | ۷ |
+| fragmented/multiline SSE and `[DONE]` | `AgentPulse.Infrastructure.Tests` | ۷ |
+| HTTP cancellation and secret redaction | `AgentPulse.Infrastructure.Tests` | ۷ |
 | full RunPrompt flow | end-to-end with Fake Provider | ۸ |
-| real CLI process, stdout/stderr/exit codes | `Mimo.Cli.IntegrationTests` | ۹ |
-| Ctrl+C and crash recovery | `Mimo.Cli.IntegrationTests` | ۹ |
+| real CLI process, stdout/stderr/exit codes | `AgentPulse.Cli.IntegrationTests` | ۹ |
+| Ctrl+C and crash recovery | `AgentPulse.Cli.IntegrationTests` | ۹ |
 
 ---
 
