@@ -61,14 +61,11 @@
 
 ## P-007 — مدل ذخیره MessagePart قابل توسعه
 
-- وضعیت: پیشنهاد
-- فاز تصمیم‌گیری: ۲
-- مسئله: فقط Text Part در Scope است، اما مدل نباید افزودن Partهای آینده را بشکند.
-- گزینه‌های قابل بررسی:
-  - TPH با discriminator و payload version
-  - جدول پایه Part همراه payload JSON نسخه‌دار
-  - جدول‌های جدا با contract مشترک
-- هیچ استراتژی در فاز صفر Accepted نشده است.
+- وضعیت: پذیرفته‌شده در فاز ۲
+- تصمیم: نگاشت TPH روی جدول پایه `MessageParts` با discriminator صریح `PartType`.
+- دلیل: قرارداد مشترک شناسه، ترتیب و Timestampها در جدول پایه حفظ می‌شود و افزودن Partهای جدید بدون تغییر رابطه Message و Part ممکن می‌ماند.
+- محدودیت فعلی: فقط `TextMessagePart` با مقدار discriminator برابر `text` پیاده‌سازی شده است؛ هیچ Part آینده‌نگرانه دیگری در فاز ۲ ساخته نشده است.
+- پیامد Persistence: ستون‌های اختصاصی subtypeها nullable می‌مانند و invariantهای subtype در Domain محافظت می‌شوند.
 
 ## P-008 — شناسه پایدار Project برای پوشه Non-Git
 
