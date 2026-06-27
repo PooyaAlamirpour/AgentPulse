@@ -28,6 +28,16 @@ public sealed class MessageRepository(AgentPulseDbContext dbContext) : IMessageR
             .ToListAsync(cancellationToken);
     }
 
+    public async Task<long> GetMaximumSequenceAsync(
+        SessionId sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return await dbContext.Messages
+            .Where(message => message.SessionId == sessionId)
+            .Select(message => (long?)message.Sequence)
+            .MaxAsync(cancellationToken) ?? 0;
+    }
+
     public async Task AddAsync(Message message, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(message);

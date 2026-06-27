@@ -30,6 +30,7 @@ internal sealed class SqliteTestDatabase : IAsyncDisposable
             DataSource = databasePath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             ForeignKeys = false,
+            DefaultTimeout = 30,
         }.ToString();
 
         var options = new DbContextOptionsBuilder<AgentPulseDbContext>()

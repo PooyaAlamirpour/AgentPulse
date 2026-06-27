@@ -19,6 +19,7 @@ public sealed class AgentPulseDbContextFactory : IDesignTimeDbContextFactory<Age
         {
             DataSource = databasePath,
             ForeignKeys = true,
+            DefaultTimeout = 30,
         }.ToString();
 
         var options = new DbContextOptionsBuilder<AgentPulseDbContext>()

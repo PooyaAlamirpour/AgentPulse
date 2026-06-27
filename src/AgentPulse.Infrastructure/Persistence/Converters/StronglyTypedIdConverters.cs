@@ -1,5 +1,6 @@
 using AgentPulse.Domain.Messages;
 using AgentPulse.Domain.Projects;
+using AgentPulse.Domain.SessionRuns;
 using AgentPulse.Domain.Sessions;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
@@ -33,6 +34,14 @@ internal sealed class MessagePartIdConverter : ValueConverter<MessagePartId, Gui
 {
     public MessagePartIdConverter()
         : base(id => id.Value, value => new MessagePartId(value))
+    {
+    }
+}
+
+internal sealed class RunLeaseIdConverter : ValueConverter<RunLeaseId, Guid>
+{
+    public RunLeaseIdConverter()
+        : base(id => id.Value, value => new RunLeaseId(value))
     {
     }
 }

@@ -31,7 +31,15 @@ public sealed class TextMessagePart : MessagePart
 
     private static string RequireText(string text)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(text);
+        ArgumentNullException.ThrowIfNull(text);
+
+        if (text.Length > 0 && string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException(
+                "Text must either be empty or contain a non-whitespace character.",
+                nameof(text));
+        }
+
         return text;
     }
 }

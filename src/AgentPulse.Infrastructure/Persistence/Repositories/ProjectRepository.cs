@@ -26,6 +26,32 @@ public sealed class ProjectRepository(AgentPulseDbContext dbContext) : IProjectR
             cancellationToken);
     }
 
+    public async Task UpsertAsync(Project project, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+
+        var trackedProject = dbContext.ChangeTracker
+            .Entries<Project>()
+            .SingleOrDefault(entry => entry.Entity.Id == project.Id);
+        if (trackedProject is not null)
+        {
+            trackedProject.State = EntityState.Detached;
+        }
+
+        await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO Projects
+                (Id, NormalizedRootPath, IsGitRepository, GitWorktree, CreatedAtUtc, UpdatedAtUtc)
+            VALUES
+                ({project.Id.Value}, {project.NormalizedRootPath}, {project.IsGitRepository},
+                 {project.GitWorktree}, {project.CreatedAtUtc.Ticks}, {project.UpdatedAtUtc.Ticks})
+            ON CONFLICT(Id) DO UPDATE SET
+                NormalizedRootPath = excluded.NormalizedRootPath,
+                IsGitRepository = excluded.IsGitRepository,
+                GitWorktree = excluded.GitWorktree,
+                UpdatedAtUtc = MAX(Projects.UpdatedAtUtc, excluded.UpdatedAtUtc);
+            """, cancellationToken);
+    }
+
     public async Task AddAsync(Project project, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(project);

@@ -11,6 +11,10 @@ public interface IMessageRepository
         SessionId sessionId,
         CancellationToken cancellationToken = default);
 
+    Task<long> GetMaximumSequenceAsync(
+        SessionId sessionId,
+        CancellationToken cancellationToken = default);
+
     Task AddAsync(Message message, CancellationToken cancellationToken = default);
 
     void Remove(Message message);

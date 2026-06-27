@@ -64,6 +64,8 @@ public sealed class Message
 
     public DateTime UpdatedAtUtc { get; private set; }
 
+    public string? FailureReason { get; private set; }
+
     public IReadOnlyCollection<MessagePart> Parts => _parts.AsReadOnly();
 
     public TextMessagePart AddTextPart(
@@ -101,15 +103,23 @@ public sealed class Message
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
+        FailureReason = null;
     }
 
     public void Fail(DateTime updatedAtUtc)
     {
+        Fail(null, updatedAtUtc);
+    }
+
+    public void Fail(string? reason, DateTime updatedAtUtc)
+    {
+        var validatedReason = NormalizeFailureReason(reason);
         TransitionTo(
             MessageStatus.Failed,
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
+        FailureReason = validatedReason;
     }
 
     public void Cancel(DateTime updatedAtUtc)
@@ -119,6 +129,18 @@ public sealed class Message
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
+        FailureReason = null;
+    }
+
+    private static string? NormalizeFailureReason(string? reason)
+    {
+        if (reason is null)
+        {
+            return null;
+        }
+
+        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
+        return reason.Trim();
     }
 
     private void TransitionTo(

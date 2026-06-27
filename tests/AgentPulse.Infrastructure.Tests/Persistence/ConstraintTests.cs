@@ -78,6 +78,35 @@ public sealed class ConstraintTests
     }
 
     [Fact]
+    public async Task Only_one_run_lease_can_exist_per_session()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var project = PersistenceTestData.CreateProject();
+        var session = PersistenceTestData.CreateSession(project);
+        var firstLease = new AgentPulse.Domain.SessionRuns.RunLease(
+            session.Id,
+            AgentPulse.Domain.SessionRuns.RunLeaseId.New(),
+            PersistenceTestData.TimestampUtc,
+            PersistenceTestData.TimestampUtc.AddMinutes(5));
+
+        await using (var seedContext = database.CreateContext())
+        {
+            await seedContext.AddRangeAsync(project, session, firstLease);
+            await seedContext.SaveChangesAsync();
+        }
+
+        await using var context = database.CreateContext();
+        var duplicateLease = new AgentPulse.Domain.SessionRuns.RunLease(
+            session.Id,
+            AgentPulse.Domain.SessionRuns.RunLeaseId.New(),
+            PersistenceTestData.TimestampUtc,
+            PersistenceTestData.TimestampUtc.AddMinutes(5));
+        await context.RunLeases.AddAsync(duplicateLease);
+
+        await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+    }
+
+    [Fact]
     public async Task Duplicate_part_order_in_same_message_is_rejected_by_database()
     {
         await using var database = await SqliteTestDatabase.CreateAsync();

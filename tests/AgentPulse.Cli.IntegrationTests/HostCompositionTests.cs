@@ -7,6 +7,9 @@ using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Hosting;
 using AgentPulse.Application.Processes;
+using AgentPulse.Application.Persistence;
+using AgentPulse.Application.SessionRuns;
+using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Application.ProjectContexts;
 
 namespace AgentPulse.Cli.IntegrationTests;
@@ -47,6 +50,22 @@ public sealed class HostCompositionTests
             Assert.NotNull(host.Services.GetRequiredService<IPlatformProvider>());
             Assert.NotNull(host.Services.GetRequiredService<IProjectIdFactory>());
             Assert.NotNull(host.Services.GetRequiredService<IProjectContextFactory>());
+            Assert.NotNull(host.Services.GetRequiredService<SessionRunOptions>());
+
+            using var scope = host.Services.CreateScope();
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<AgentPulseDbContext>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IProjectRepository>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<ISessionRepository>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IMessageRepository>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRunLeaseRepository>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IUnitOfWork>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRegisterProject>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<ICreateSession>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IContinueSession>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IPrepareSessionRun>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IEndSessionRun>());
+            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRenewSessionRunLease>());
+
             Assert.NotNull(host.Services.GetRequiredService<IPromptInputReader>());
             Assert.NotNull(host.Services.GetRequiredService<IRunCommandHandler>());
             Assert.NotNull(host.Services.GetRequiredService<CliApplication>());

@@ -7,6 +7,8 @@ using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Console;
 using AgentPulse.Application.Processes;
+using AgentPulse.Application.SessionRuns;
+using AgentPulse.Infrastructure;
 using AgentPulse.Application.ProjectContexts;
 using AgentPulse.Infrastructure.Processes;
 using AgentPulse.Infrastructure.ProjectContexts;
@@ -56,6 +58,28 @@ public static class AgentPulseHost
         builder.Services.AddSingleton<IPlatformProvider, SystemPlatformProvider>();
         builder.Services.AddSingleton<IProjectIdFactory, DeterministicProjectIdFactory>();
         builder.Services.AddSingleton<IProjectContextFactory, ProjectContextFactory>();
+
+        builder.Services.AddSingleton(serviceProvider =>
+        {
+            var configuration = serviceProvider.GetRequiredService<IConfiguration>();
+            var options = new SessionRunOptions();
+            configuration.GetSection(SessionRunOptions.SectionName).Bind(options);
+            options.Validate();
+            return options;
+        });
+
+        var configuredDatabasePath = builder.Configuration["AgentPulse:Persistence:DatabasePath"];
+        var databasePath = string.IsNullOrWhiteSpace(configuredDatabasePath)
+            ? Path.Combine(AppContext.BaseDirectory, "agentpulse.db")
+            : Path.GetFullPath(configuredDatabasePath, AppContext.BaseDirectory);
+        builder.Services.AddAgentPulsePersistence(databasePath);
+
+        builder.Services.AddScoped<IRegisterProject, RegisterProject>();
+        builder.Services.AddScoped<ICreateSession, CreateSession>();
+        builder.Services.AddScoped<IContinueSession, ContinueSession>();
+        builder.Services.AddScoped<IPrepareSessionRun, PrepareSessionRun>();
+        builder.Services.AddScoped<IEndSessionRun, EndSessionRun>();
+        builder.Services.AddScoped<IRenewSessionRunLease, RenewSessionRunLease>();
 
         builder.Services.AddSingleton<IConsole>(console ?? new SystemConsole());
         builder.Services.AddSingleton<IPromptInputReader, PromptInputReader>();

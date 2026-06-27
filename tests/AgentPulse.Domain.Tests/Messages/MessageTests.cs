@@ -56,7 +56,7 @@ public sealed class MessageTests
     }
 
     [Fact]
-    public void Text_part_requires_text_and_preserves_utc_updates()
+    public void Text_part_allows_empty_streaming_buffer_and_preserves_utc_updates()
     {
         var createdAtUtc = new DateTime(2026, 6, 27, 10, 0, 0, DateTimeKind.Utc);
         var message = new Message(
@@ -71,7 +71,9 @@ public sealed class MessageTests
 
         Assert.Equal("hello world", part.Text);
         Assert.Equal(DateTimeKind.Utc, part.UpdatedAtUtc.Kind);
-        Assert.Throws<ArgumentException>(() => part.ReplaceText(" ", createdAtUtc.AddSeconds(2)));
-        Assert.Equal("hello world", part.Text);
+        part.ReplaceText(string.Empty, createdAtUtc.AddSeconds(2));
+        Assert.Equal(string.Empty, part.Text);
+        Assert.Throws<ArgumentException>(() => part.ReplaceText(" ", createdAtUtc.AddSeconds(3)));
+        Assert.Throws<ArgumentNullException>(() => part.ReplaceText(null!, createdAtUtc.AddSeconds(4)));
     }
 }

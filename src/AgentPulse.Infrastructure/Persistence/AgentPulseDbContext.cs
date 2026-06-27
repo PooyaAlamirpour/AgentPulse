@@ -1,6 +1,7 @@
 using AgentPulse.Domain.Messages;
 using AgentPulse.Domain.Projects;
 using AgentPulse.Domain.Sessions;
+using AgentPulse.Domain.SessionRuns;
 using AgentPulse.Infrastructure.Persistence.Interceptors;
 using Microsoft.EntityFrameworkCore;
 
@@ -16,6 +17,8 @@ public sealed class AgentPulseDbContext(DbContextOptions<AgentPulseDbContext> op
     public DbSet<Message> Messages => Set<Message>();
 
     public DbSet<MessagePart> MessageParts => Set<MessagePart>();
+
+    public DbSet<RunLease> RunLeases => Set<RunLease>();
 
     protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
     {

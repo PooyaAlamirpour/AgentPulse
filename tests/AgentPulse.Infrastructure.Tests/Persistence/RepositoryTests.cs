@@ -45,6 +45,42 @@ public sealed class RepositoryTests
     }
 
     [Fact]
+    public async Task Message_parts_are_loaded_in_deterministic_order()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var project = PersistenceTestData.CreateProject();
+        var session = PersistenceTestData.CreateSession(project);
+        var message = new AgentPulse.Domain.Messages.Message(
+            AgentPulse.Domain.Messages.MessageId.New(),
+            session.Id,
+            AgentPulse.Domain.Messages.MessageRole.Assistant,
+            1,
+            PersistenceTestData.TimestampUtc);
+        message.AddTextPart(
+            AgentPulse.Domain.Messages.MessagePartId.New(),
+            1,
+            "first",
+            PersistenceTestData.TimestampUtc);
+        message.AddTextPart(
+            AgentPulse.Domain.Messages.MessagePartId.New(),
+            2,
+            "second",
+            PersistenceTestData.TimestampUtc);
+        message.Complete(PersistenceTestData.TimestampUtc);
+
+        await using (var writeContext = database.CreateContext())
+        {
+            await writeContext.AddRangeAsync(project, session, message);
+            await writeContext.SaveChangesAsync();
+        }
+
+        await using var readContext = database.CreateContext();
+        var loaded = await new MessageRepository(readContext).GetByIdAsync(message.Id);
+
+        Assert.Equal(new[] { 1, 2 }, loaded!.Parts.Select(part => part.Order));
+    }
+
+    [Fact]
     public async Task Messages_are_loaded_in_sequence_order()
     {
         await using var database = await SqliteTestDatabase.CreateAsync();

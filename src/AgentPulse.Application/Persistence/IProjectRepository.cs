@@ -10,6 +10,8 @@ public interface IProjectRepository
         string normalizedRootPath,
         CancellationToken cancellationToken = default);
 
+    Task UpsertAsync(Project project, CancellationToken cancellationToken = default);
+
     Task AddAsync(Project project, CancellationToken cancellationToken = default);
 
     void Remove(Project project);
