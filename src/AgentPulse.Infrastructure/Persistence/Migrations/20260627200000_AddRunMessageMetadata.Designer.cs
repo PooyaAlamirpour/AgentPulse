@@ -1,14 +1,16 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace AgentPulse.Infrastructure.Persistence.Migrations;
 
 [DbContext(typeof(AgentPulseDbContext))]
-partial class AgentPulseDbContextModelSnapshot : ModelSnapshot
+[Migration("20260627200000_AddRunMessageMetadata")]
+partial class AddRunMessageMetadata
 {
-    protected override void BuildModel(ModelBuilder modelBuilder)
+    protected override void BuildTargetModel(ModelBuilder modelBuilder)
     {
         RunMessageMetadataModel.Build(modelBuilder);
     }

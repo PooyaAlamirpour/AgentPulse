@@ -16,6 +16,7 @@ public interface IStreamingRunPersistence
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
+        AssistantCompletionMetadata metadata,
         CancellationToken cancellationToken = default);
 
     Task FailAsync(
@@ -23,7 +24,7 @@ public interface IStreamingRunPersistence
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
-        string failureReason,
+        AssistantFailureMetadata metadata,
         CancellationToken cancellationToken = default);
 
     Task CancelAsync(
@@ -31,5 +32,6 @@ public interface IStreamingRunPersistence
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
+        string model,
         CancellationToken cancellationToken = default);
 }

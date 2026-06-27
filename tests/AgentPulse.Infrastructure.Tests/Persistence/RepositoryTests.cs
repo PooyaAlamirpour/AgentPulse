@@ -1,3 +1,4 @@
+using AgentPulse.Domain.Projects;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
 
@@ -99,5 +100,42 @@ public sealed class RepositoryTests
         var messages = await new MessageRepository(readContext).ListBySessionIdAsync(session.Id);
 
         Assert.Equal(new long[] { 1, 2 }, messages.Select(message => message.Sequence));
+    }
+
+    [Fact]
+    public async Task Project_upsert_does_not_downgrade_existing_git_metadata()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var projectId = ProjectId.New();
+        var timestamp = PersistenceTestData.TimestampUtc;
+        var gitProject = new Project(
+            projectId,
+            "/workspace/repository",
+            true,
+            "/workspace/repository",
+            timestamp);
+
+        await using (var initialContext = database.CreateContext())
+        {
+            await new ProjectRepository(initialContext).UpsertAsync(gitProject);
+        }
+
+        var nonGitCandidate = new Project(
+            projectId,
+            "/workspace/repository",
+            false,
+            null,
+            timestamp.AddMinutes(1));
+
+        await using (var updateContext = database.CreateContext())
+        {
+            await new ProjectRepository(updateContext).UpsertAsync(nonGitCandidate);
+        }
+
+        await using var readContext = database.CreateContext();
+        var loaded = Assert.IsType<Project>(
+            await new ProjectRepository(readContext).GetByIdAsync(projectId));
+        Assert.True(loaded.IsGitRepository);
+        Assert.Equal("/workspace/repository", loaded.GitWorktree);
     }
 }

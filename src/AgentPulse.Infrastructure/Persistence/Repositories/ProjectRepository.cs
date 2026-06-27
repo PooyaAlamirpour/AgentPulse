@@ -46,8 +46,11 @@ public sealed class ProjectRepository(AgentPulseDbContext dbContext) : IProjectR
                  {project.GitWorktree}, {project.CreatedAtUtc.Ticks}, {project.UpdatedAtUtc.Ticks})
             ON CONFLICT(Id) DO UPDATE SET
                 NormalizedRootPath = excluded.NormalizedRootPath,
-                IsGitRepository = excluded.IsGitRepository,
-                GitWorktree = excluded.GitWorktree,
+                IsGitRepository = Projects.IsGitRepository OR excluded.IsGitRepository,
+                GitWorktree = CASE
+                    WHEN excluded.IsGitRepository THEN excluded.GitWorktree
+                    ELSE Projects.GitWorktree
+                END,
                 UpdatedAtUtc = MAX(Projects.UpdatedAtUtc, excluded.UpdatedAtUtc);
             """, cancellationToken);
     }

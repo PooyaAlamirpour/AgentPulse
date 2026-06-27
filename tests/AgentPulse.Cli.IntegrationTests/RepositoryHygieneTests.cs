@@ -26,22 +26,44 @@ public sealed class RepositoryHygieneTests
         Assert.Empty(artifacts);
     }
 
+    [Theory]
+    [InlineData("ModelProviders/Xiaomi/XiaomiChatRequestMapper.cs")]
+    [InlineData("ModelProviders/Xiaomi/XiaomiChatRequestDto.cs")]
+    [InlineData("ModelProviders/Xiaomi/TimedReadStream.cs")]
+    [InlineData("ModelProviders/OpenAiCompatible/TimedReadStream.cs")]
+    [InlineData("ModelProviders/OpenAiCompatible/OpenAiCompatibleCredentialValidator.cs")]
+    public void Deprecated_xiaomi_transport_artifacts_are_absent(string relativeArtifactPath)
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var pathSegments = relativeArtifactPath.Split('/');
+        var artifactPath = Path.Combine(
+            [repositoryRoot, "src", "AgentPulse.Infrastructure", .. pathSegments]);
+
+        Assert.False(
+            File.Exists(artifactPath),
+            $"Deprecated infrastructure artifact {Path.GetFileName(artifactPath)} must not exist.");
+    }
+
     [Fact]
-    public void Active_documentation_marks_phase_seven_complete_with_single_generic_runtime_client()
+    public void Active_documentation_marks_phase_eight_complete_with_final_vertical_flow()
     {
         var repositoryRoot = FindRepositoryRoot();
         var readme = File.ReadAllText(Path.Combine(repositoryRoot, "README.md"));
         var map = File.ReadAllText(Path.Combine(repositoryRoot, "docs", "node-to-dotnet-map.md"));
 
-        Assert.Contains("| 7 | ✅ |", readme, StringComparison.Ordinal);
-        Assert.Contains("OpenAI-Compatible Provider Generalization and Hardening", readme, StringComparison.Ordinal);
+        Assert.Contains("| 8 | ✅ |", readme, StringComparison.Ordinal);
+        Assert.Contains("Final Vertical Prompt Flow and Session Reliability", readme, StringComparison.Ordinal);
         Assert.Contains("OpenAiCompatibleChatModelClient", readme, StringComparison.Ordinal);
+        Assert.Contains("--dir", map, StringComparison.Ordinal);
+        Assert.Contains("--model", map, StringComparison.Ordinal);
+        Assert.Contains("--session", map, StringComparison.Ordinal);
+        Assert.Contains("stdin", map, StringComparison.Ordinal);
         Assert.DoesNotContain("FakeChatModelClient", map, StringComparison.Ordinal);
         Assert.DoesNotContain("Provider واقعی فقط در فاز ۷", map, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Session_documentation_keeps_cli_session_option_in_phase_eight_only()
+    public void Session_documentation_records_phase_eight_cli_continuation_as_complete()
     {
         var repositoryRoot = FindRepositoryRoot();
         var map = File.ReadAllText(Path.Combine(repositoryRoot, "docs", "node-to-dotnet-map.md"));
@@ -51,7 +73,8 @@ public sealed class RepositoryHygieneTests
         Assert.Contains("در سطح Application", phaseFour, StringComparison.Ordinal);
         Assert.DoesNotContain("--session", phaseFour, StringComparison.Ordinal);
         Assert.Contains("--session", phaseEight, StringComparison.Ordinal);
-        Assert.Contains("آینده", phaseEight, StringComparison.Ordinal);
+        Assert.DoesNotContain("آینده", phaseEight, StringComparison.Ordinal);
+        Assert.Contains("Release اتمیک مالک‌محور", phaseEight, StringComparison.Ordinal);
     }
 
     [Fact]

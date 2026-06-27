@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text;
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRequests;
@@ -13,13 +14,13 @@ public sealed class RunPrompt(
     IChatModelClient chatModelClient,
     IStreamingRunPersistence persistence,
     IRunLeaseRenewalService leaseRenewalService,
+    IEndSessionRun endSessionRun,
     IModelOutputSink outputSink,
     IClock clock,
     IAsyncDelay asyncDelay,
+    ChatModelRunDefaults modelDefaults,
     StreamingRunOptions options) : IRunPrompt
 {
-    private const int MaximumFailureReasonLength = 1024;
-
     public async Task<RunPromptResult> ExecuteAsync(
         RunPromptRequest request,
         CancellationToken cancellationToken = default)
@@ -31,60 +32,151 @@ public sealed class RunPrompt(
             throw new ArgumentException("The prompt cannot be empty.", nameof(request));
         }
 
-        options.Validate();
+        if (request.ModelOverride is not null &&
+            string.IsNullOrWhiteSpace(request.ModelOverride))
+        {
+            throw new ArgumentException(
+                "The model override cannot be empty.",
+                nameof(request));
+        }
 
-        var projectContext = await projectContextFactory.CreateAsync(
+        if (request.SessionId is not null &&
+            request.SessionId.Value.Value == Guid.Empty)
+        {
+            throw new ArgumentException(
+                "The session identifier cannot be empty.",
+                nameof(request));
+        }
+
+        options.Validate();
+        var model = request.ModelOverride?.Trim() ?? modelDefaults.Model;
+
+        var projectContext = await projectContextFactory.CreateForRunAsync(
             request.ProjectPath,
             cancellationToken);
         var prepared = await prepareSessionRun.ExecuteAsync(
-            new PrepareSessionRunRequest(projectContext, request.SessionId, request.Prompt),
+            new PrepareSessionRunRequest(
+                projectContext,
+                request.SessionId,
+                request.Prompt,
+                model),
             cancellationToken);
 
-        var responseText = new StringBuilder();
+        return await ExecutePreparedAsync(
+            projectContext,
+            prepared,
+            model,
+            cancellationToken);
+    }
+
+    private async Task<RunPromptResult> ExecutePreparedAsync(
+        ProjectContext projectContext,
+        PrepareSessionRunResult prepared,
+        string model,
+        CancellationToken cancellationToken)
+    {
+        RunPromptResult? result = null;
+        Exception? pendingException = null;
+
+        try
+        {
+            result = await ExecutePreparedCoreAsync(
+                projectContext,
+                prepared,
+                model,
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            pendingException = exception;
+        }
+        finally
+        {
+            var releaseException = await TryReleaseLeaseAsync(prepared);
+            if (releaseException is not null)
+            {
+                pendingException = pendingException is null
+                    ? new ModelRunException(
+                        ModelRunErrorCode.PersistenceFailure,
+                        "The model run completed, but its session lock could not be released safely.",
+                        releaseException)
+                    : CreateCleanupFailure(pendingException, releaseException);
+            }
+        }
+
+        if (pendingException is not null)
+        {
+            ExceptionDispatchInfo.Capture(pendingException).Throw();
+        }
+
+        return result ?? throw new ModelRunException(
+            ModelRunErrorCode.UnexpectedFailure,
+            "The model run ended without a result.");
+    }
+
+    private async Task<RunPromptResult> ExecutePreparedCoreAsync(
+        ProjectContext projectContext,
+        PrepareSessionRunResult prepared,
+        string model,
+        CancellationToken cancellationToken)
+    {
+        StringBuilder? responseText = null;
         var lastFlushedLength = 0;
         var flushCount = 0;
-        var lastFlushUtc = GetUtcNow();
-        var finalized = false;
+        var lastFlushUtc = default(DateTime);
+        var messageFinalized = false;
         ModelUsage? usage = null;
         ModelFinishReason? finishReason = null;
-
-        using var streamCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-            cancellationToken);
-        using var heartbeatCancellation = new CancellationTokenSource();
-        var heartbeatState = new HeartbeatState();
+        RunPromptResult? result = null;
+        Exception? pendingException = null;
+        CancellationTokenSource? streamCancellation = null;
+        CancellationTokenSource? heartbeatCancellation = null;
+        HeartbeatState? heartbeatState = null;
         Task? heartbeatTask = null;
 
         try
         {
+            var responseBuffer = new StringBuilder();
+            responseText = responseBuffer;
+            lastFlushUtc = GetUtcNow();
+            var activeStreamCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken);
+            streamCancellation = activeStreamCancellation;
+            var activeHeartbeatCancellation = new CancellationTokenSource();
+            heartbeatCancellation = activeHeartbeatCancellation;
+            var activeHeartbeatState = new HeartbeatState();
+            heartbeatState = activeHeartbeatState;
+
             var modelRequest = requestBuilder.Build(
                 new ChatModelRequestBuildInput(
                     projectContext,
                     prepared.OrderedPreviousHistory,
-                    prepared.UserMessage));
+                    prepared.UserMessage,
+                    model));
 
             heartbeatTask = RunHeartbeatAsync(
                 prepared.Session.Id,
                 prepared.RunLease.LeaseId,
-                streamCancellation,
-                heartbeatCancellation.Token,
-                heartbeatState);
+                activeStreamCancellation,
+                activeHeartbeatCancellation.Token,
+                activeHeartbeatState);
 
             var completedEventSeen = false;
             CancellationTokenSource? flushDelayCancellation = null;
             Task? flushDelayTask = null;
 
             await using var streamEnumerator = chatModelClient
-                .StreamAsync(modelRequest, streamCancellation.Token)
-                .GetAsyncEnumerator(streamCancellation.Token);
+                .StreamAsync(modelRequest, activeStreamCancellation.Token)
+                .GetAsyncEnumerator(activeStreamCancellation.Token);
             var moveNextTask = streamEnumerator.MoveNextAsync().AsTask();
 
             try
             {
                 while (true)
                 {
-                    ThrowIfHeartbeatFailed(heartbeatState);
+                    ThrowIfHeartbeatFailed(activeHeartbeatState);
 
-                    if (flushDelayTask is null && responseText.Length > lastFlushedLength)
+                    if (flushDelayTask is null && responseBuffer.Length > lastFlushedLength)
                     {
                         var elapsed = GetUtcNow() - lastFlushUtc;
                         var remaining = options.FlushInterval - elapsed;
@@ -94,7 +186,7 @@ public sealed class RunPrompt(
                         }
 
                         flushDelayCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                            streamCancellation.Token);
+                            activeStreamCancellation.Token);
                         flushDelayTask = asyncDelay.DelayAsync(
                             remaining,
                             flushDelayCancellation.Token);
@@ -110,13 +202,13 @@ public sealed class RunPrompt(
                             flushDelayCancellation = null;
                             flushDelayTask = null;
 
-                            if (responseText.Length > lastFlushedLength)
+                            if (responseBuffer.Length > lastFlushedLength)
                             {
-                                await persistence.FlushAssistantTextAsync(
+                                await FlushPartialAsync(
                                     prepared.AssistantMessage.Id,
-                                    responseText.ToString(),
-                                    streamCancellation.Token);
-                                lastFlushedLength = responseText.Length;
+                                    responseBuffer.ToString(),
+                                    activeStreamCancellation.Token);
+                                lastFlushedLength = responseBuffer.Length;
                                 lastFlushUtc = GetUtcNow();
                                 flushCount++;
                             }
@@ -141,21 +233,21 @@ public sealed class RunPrompt(
                     switch (streamEvent)
                     {
                         case ModelStreamEvent.TextDelta textDelta:
-                            responseText.Append(textDelta.Text);
-                            await outputSink.WriteDeltaAsync(
+                            responseBuffer.Append(textDelta.Text);
+                            await WriteDeltaAsync(
                                 textDelta.Text,
-                                streamCancellation.Token);
+                                activeStreamCancellation.Token);
 
                             if (ShouldFlush(
-                                    responseText.Length,
+                                    responseBuffer.Length,
                                     lastFlushedLength,
                                     lastFlushUtc))
                             {
-                                await persistence.FlushAssistantTextAsync(
+                                await FlushPartialAsync(
                                     prepared.AssistantMessage.Id,
-                                    responseText.ToString(),
-                                    streamCancellation.Token);
-                                lastFlushedLength = responseText.Length;
+                                    responseBuffer.ToString(),
+                                    activeStreamCancellation.Token);
+                                lastFlushedLength = responseBuffer.Length;
                                 lastFlushUtc = GetUtcNow();
                                 flushCount++;
 
@@ -175,10 +267,13 @@ public sealed class RunPrompt(
                             usage = usageEvent.Value;
                             break;
 
-                        case ModelStreamEvent.Failed failed:
+                        case ModelStreamEvent.Failed:
                             throw new ModelProviderException(
                                 ModelProviderErrorCode.Unknown,
-                                failed.ErrorMessage);
+                                GetPublicProviderMessage(ModelProviderErrorCode.Unknown),
+                                responseBuffer.Length == 0
+                                    ? ModelFailureStage.BeforeFirstToken
+                                    : ModelFailureStage.AfterFirstToken);
 
                         case ModelStreamEvent.Completed completed:
                             completedEventSeen = true;
@@ -204,7 +299,8 @@ public sealed class RunPrompt(
                 }
             }
 
-            ThrowIfHeartbeatFailed(heartbeatState);
+            ThrowIfHeartbeatFailed(activeHeartbeatState);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (!completedEventSeen || finishReason is null)
             {
@@ -213,7 +309,7 @@ public sealed class RunPrompt(
                     "The model stream ended without a completion event.");
             }
 
-            if (responseText.Length == 0)
+            if (responseBuffer.Length == 0)
             {
                 throw new ModelRunException(
                     ModelRunErrorCode.InvalidStream,
@@ -222,13 +318,11 @@ public sealed class RunPrompt(
 
             if (finishReason == ModelFinishReason.Cancelled)
             {
-                await persistence.CancelAsync(
-                    prepared.Session.Id,
-                    prepared.AssistantMessage.Id,
-                    prepared.RunLease.LeaseId,
-                    responseText.ToString(),
-                    CancellationToken.None);
-                finalized = true;
+                await FinalizeCancellationAsync(
+                    prepared,
+                    responseBuffer.ToString(),
+                    model);
+                messageFinalized = true;
                 throw new ModelRunException(
                     ModelRunErrorCode.ProviderCancelled,
                     "The model provider cancelled the response.");
@@ -241,102 +335,259 @@ public sealed class RunPrompt(
                     "The model provider reported an error completion.");
             }
 
-            await persistence.CompleteAsync(
-                prepared.Session.Id,
-                prepared.AssistantMessage.Id,
-                prepared.RunLease.LeaseId,
-                responseText.ToString(),
-                CancellationToken.None);
-            finalized = true;
+            await CompleteOutputAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            await FinalizeCompletionAsync(
+                prepared,
+                responseBuffer.ToString(),
+                new AssistantCompletionMetadata(model, finishReason.Value, usage),
+                cancellationToken);
+            messageFinalized = true;
             flushCount++;
 
-            await outputSink.CompleteAsync(CancellationToken.None);
-
-            return new RunPromptResult(
+            result = new RunPromptResult(
                 prepared.Session.Id,
                 prepared.UserMessage.Id,
                 prepared.AssistantMessage.Id,
                 prepared.RunLease.LeaseId,
-                responseText.ToString(),
+                responseBuffer.ToString(),
                 finishReason.Value,
                 usage,
                 flushCount);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException exception)
+            when (cancellationToken.IsCancellationRequested)
         {
-            if (!finalized)
+            if (!messageFinalized)
             {
-                await FinalizeCancellationAsync(prepared, responseText.ToString());
-                finalized = true;
-            }
-
-            throw;
-        }
-        catch (OperationCanceledException) when (heartbeatState.Exception is not null)
-        {
-            var heartbeatException = heartbeatState.Exception!;
-
-            if (!finalized)
-            {
-                await FinalizeFailureAsync(
+                var cleanupException = await TryFinalizeCancellationAsync(
                     prepared,
-                    responseText.ToString(),
-                    "The run lease was lost while the model response was streaming.");
-                finalized = true;
+                    responseText?.ToString() ?? string.Empty,
+                    model);
+                messageFinalized = cleanupException is null;
+                pendingException = cleanupException is null
+                    ? exception
+                    : CreateCleanupFailure(exception, cleanupException);
             }
-
-            throw new ModelRunException(
+            else
+            {
+                pendingException = exception;
+            }
+        }
+        catch (ModelProviderOperationCanceledException)
+        {
+            if (!messageFinalized)
+            {
+                var cleanupException = await TryFinalizeCancellationAsync(
+                    prepared,
+                    responseText?.ToString() ?? string.Empty,
+                    model);
+                messageFinalized = cleanupException is null;
+                var providerCancellation = new ModelRunException(
+                    ModelRunErrorCode.ProviderCancelled,
+                    "The model provider cancelled the request before completion.");
+                pendingException = cleanupException is null
+                    ? providerCancellation
+                    : CreateCleanupFailure(providerCancellation, cleanupException);
+            }
+            else
+            {
+                pendingException = new ModelRunException(
+                    ModelRunErrorCode.ProviderCancelled,
+                    "The model provider cancelled the request before completion.");
+            }
+        }
+        catch (OperationCanceledException)
+            when (heartbeatState?.Exception is not null)
+        {
+            var leaseLost = new ModelRunException(
                 ModelRunErrorCode.LeaseLost,
                 "The run lease was lost while the model response was streaming.",
-                heartbeatException);
-        }
-        catch (Exception exception)
-        {
-            if (!finalized)
+                heartbeatState!.Exception!);
+
+            if (!messageFinalized)
             {
                 var cleanupException = await TryFinalizeFailureAsync(
                     prepared,
-                    responseText.ToString(),
-                    ToSafeFailureReason(exception));
-                finalized = cleanupException is null;
-
-                if (cleanupException is not null)
-                {
-                    throw new ModelRunException(
-                        ModelRunErrorCode.PersistenceFailure,
-                        "The model run failed and its final state could not be persisted safely.",
-                        new AggregateException(exception, cleanupException));
-                }
+                    responseText?.ToString() ?? string.Empty,
+                    CreateFailureMetadata(leaseLost, model));
+                messageFinalized = cleanupException is null;
+                pendingException = cleanupException is null
+                    ? leaseLost
+                    : CreateCleanupFailure(leaseLost, cleanupException);
             }
-
-            if (exception is ModelRunException)
+            else
             {
-                throw;
+                pendingException = leaseLost;
             }
+        }
+        catch (Exception exception)
+        {
+            var mappedException = MapRunException(exception);
 
-            if (exception is ModelProviderException providerException)
+            if (!messageFinalized)
             {
-                throw new ModelRunException(
-                    ModelRunErrorCode.ProviderFailure,
-                    providerException.Message,
-                    providerException);
+                var cleanupException = await TryFinalizeFailureAsync(
+                    prepared,
+                    responseText?.ToString() ?? string.Empty,
+                    CreateFailureMetadata(exception, model));
+                messageFinalized = cleanupException is null;
+                pendingException = cleanupException is null
+                    ? mappedException
+                    : CreateCleanupFailure(mappedException, cleanupException);
             }
-
-            throw new ModelRunException(
-                ModelRunErrorCode.ProviderFailure,
-                "The model run failed.",
-                exception);
+            else
+            {
+                pendingException = mappedException;
+            }
         }
         finally
         {
-            streamCancellation.Cancel();
-            heartbeatCancellation.Cancel();
+            streamCancellation?.Cancel();
+            heartbeatCancellation?.Cancel();
 
-            if (heartbeatTask is not null)
+            try
             {
-                await heartbeatTask;
+                if (heartbeatTask is not null)
+                {
+                    await heartbeatTask;
+                }
+            }
+            catch (Exception exception)
+            {
+                pendingException = pendingException is null
+                    ? MapRunException(exception)
+                    : CreateCleanupFailure(pendingException, exception);
+            }
+            finally
+            {
+                streamCancellation?.Dispose();
+                heartbeatCancellation?.Dispose();
             }
         }
+
+        if (pendingException is not null)
+        {
+            ExceptionDispatchInfo.Capture(pendingException).Throw();
+        }
+
+        return result ?? throw new ModelRunException(
+            ModelRunErrorCode.UnexpectedFailure,
+            "The model run ended without a result.");
+    }
+
+    private async Task FlushPartialAsync(
+        AgentPulse.Domain.Messages.MessageId assistantMessageId,
+        string completeText,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await persistence.FlushAssistantTextAsync(
+                assistantMessageId,
+                completeText,
+                cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new ModelRunException(
+                ModelRunErrorCode.PersistenceFailure,
+                "The partial model response could not be persisted.",
+                exception);
+        }
+    }
+
+    private async Task WriteDeltaAsync(
+        string delta,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await outputSink.WriteDeltaAsync(delta, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new ModelRunException(
+                ModelRunErrorCode.OutputFailure,
+                "The streamed model response could not be written to the console.",
+                exception);
+        }
+    }
+
+    private async Task CompleteOutputAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await outputSink.CompleteAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new ModelRunException(
+                ModelRunErrorCode.OutputFailure,
+                "The streamed model response could not be completed in the console.",
+                exception);
+        }
+    }
+
+    private async Task FinalizeCompletionAsync(
+        PrepareSessionRunResult prepared,
+        string completeText,
+        AssistantCompletionMetadata metadata,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var timeout = new CancellationTokenSource(options.CleanupTimeout);
+            using var cleanup = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken,
+                timeout.Token);
+            await persistence.CompleteAsync(
+                prepared.Session.Id,
+                prepared.AssistantMessage.Id,
+                prepared.RunLease.LeaseId,
+                completeText,
+                metadata,
+                cleanup.Token);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            throw new ModelRunException(
+                ModelRunErrorCode.PersistenceFailure,
+                "The completed model response could not be persisted.",
+                exception);
+        }
+    }
+
+    private async Task FinalizeCancellationAsync(
+        PrepareSessionRunResult prepared,
+        string completeText,
+        string model)
+    {
+        using var cleanup = new CancellationTokenSource(options.CleanupTimeout);
+        await persistence.CancelAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            completeText,
+            model,
+            cleanup.Token);
     }
 
     private async Task RunHeartbeatAsync(
@@ -422,40 +673,14 @@ public sealed class RunPrompt(
         }
     }
 
-    private async Task FinalizeCancellationAsync(
-        PrepareSessionRunResult prepared,
-        string completeText)
-    {
-        await persistence.CancelAsync(
-            prepared.Session.Id,
-            prepared.AssistantMessage.Id,
-            prepared.RunLease.LeaseId,
-            completeText,
-            CancellationToken.None);
-    }
-
-    private async Task FinalizeFailureAsync(
+    private async Task<Exception?> TryFinalizeCancellationAsync(
         PrepareSessionRunResult prepared,
         string completeText,
-        string failureReason)
-    {
-        await persistence.FailAsync(
-            prepared.Session.Id,
-            prepared.AssistantMessage.Id,
-            prepared.RunLease.LeaseId,
-            completeText,
-            failureReason,
-            CancellationToken.None);
-    }
-
-    private async Task<Exception?> TryFinalizeFailureAsync(
-        PrepareSessionRunResult prepared,
-        string completeText,
-        string failureReason)
+        string model)
     {
         try
         {
-            await FinalizeFailureAsync(prepared, completeText, failureReason);
+            await FinalizeCancellationAsync(prepared, completeText, model);
             return null;
         }
         catch (Exception exception)
@@ -464,19 +689,165 @@ public sealed class RunPrompt(
         }
     }
 
-    private static string ToSafeFailureReason(Exception exception)
+    private async Task<Exception?> TryFinalizeFailureAsync(
+        PrepareSessionRunResult prepared,
+        string completeText,
+        AssistantFailureMetadata metadata)
     {
-        var message = exception switch
+        try
         {
-            ModelProviderException providerException => providerException.Message,
-            ModelRunException runException => runException.Message,
+            using var cleanup = new CancellationTokenSource(options.CleanupTimeout);
+            await persistence.FailAsync(
+                prepared.Session.Id,
+                prepared.AssistantMessage.Id,
+                prepared.RunLease.LeaseId,
+                completeText,
+                metadata,
+                cleanup.Token);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private async Task<Exception?> TryReleaseLeaseAsync(PrepareSessionRunResult prepared)
+    {
+        try
+        {
+            using var cleanup = new CancellationTokenSource(options.CleanupTimeout);
+            await endSessionRun.ExecuteAsync(
+                prepared.Session.Id,
+                prepared.RunLease.LeaseId,
+                cleanup.Token);
+            return null;
+        }
+        catch (Exception exception)
+        {
+            return exception;
+        }
+    }
+
+    private static AssistantFailureMetadata CreateFailureMetadata(
+        Exception exception,
+        string model)
+    {
+        return exception switch
+        {
+            ModelProviderException providerException => new AssistantFailureMetadata(
+                model,
+                GetPublicProviderMessage(providerException.Code),
+                providerException.Code.ToString(),
+                providerException.FailureStage.ToString(),
+                providerException.HttpStatusCode is null
+                    ? null
+                    : (int)providerException.HttpStatusCode.Value),
+            ModelProviderOperationCanceledException providerCancellation =>
+                new AssistantFailureMetadata(
+                    model,
+                    "The model provider cancelled the request before completion.",
+                    providerCancellation.Code.ToString(),
+                    providerCancellation.FailureStage.ToString()),
+            ModelRunException runException => new AssistantFailureMetadata(
+                model,
+                GetPublicRunFailureMessage(runException.Code),
+                runException.Code.ToString()),
+            ChatModelRequestException => new AssistantFailureMetadata(
+                model,
+                "The model request could not be built from the stored session history.",
+                "Validation"),
+            SessionRunException => new AssistantFailureMetadata(
+                model,
+                "The model run state could not be persisted safely.",
+                "Persistence"),
+            _ => new AssistantFailureMetadata(
+                model,
+                "The model run failed before completion.",
+                "Unexpected"),
+        };
+    }
+
+    private static Exception MapRunException(Exception exception)
+    {
+        return exception switch
+        {
+            ModelRunException => exception,
+            ModelProviderException providerException => new ModelRunException(
+                ModelRunErrorCode.ProviderFailure,
+                GetPublicProviderMessage(providerException.Code)),
+            ModelProviderOperationCanceledException => new ModelRunException(
+                ModelRunErrorCode.ProviderCancelled,
+                "The model provider cancelled the request before completion."),
+            ChatModelRequestException requestException => new ModelRunException(
+                ModelRunErrorCode.ValidationFailure,
+                "The model request could not be built from the stored session history.",
+                requestException),
+            SessionRunException persistenceException => new ModelRunException(
+                ModelRunErrorCode.PersistenceFailure,
+                "The model run state could not be persisted safely.",
+                persistenceException),
+            _ => new ModelRunException(
+                ModelRunErrorCode.UnexpectedFailure,
+                "The model run failed.",
+                exception),
+        };
+    }
+
+    private static ModelRunException CreateCleanupFailure(
+        Exception primaryException,
+        Exception cleanupException)
+    {
+        return new ModelRunException(
+            ModelRunErrorCode.PersistenceFailure,
+            "The model run failed and its final state could not be persisted safely.",
+            new AggregateException(primaryException, cleanupException));
+    }
+
+    private static string GetPublicRunFailureMessage(ModelRunErrorCode code)
+    {
+        return code switch
+        {
+            ModelRunErrorCode.InvalidStream =>
+                "The model provider returned an invalid streaming response.",
+            ModelRunErrorCode.LeaseLost =>
+                "The session run lock was lost while streaming.",
+            ModelRunErrorCode.PersistenceFailure =>
+                "The model response could not be persisted safely.",
+            ModelRunErrorCode.OutputFailure =>
+                "The model response could not be rendered safely.",
+            ModelRunErrorCode.ValidationFailure =>
+                "The model request could not be built from the stored session history.",
+            ModelRunErrorCode.ProviderCancelled =>
+                "The model provider cancelled the request before completion.",
             _ => "The model run failed before completion.",
         };
+    }
 
-        message = message.Trim();
-        return message.Length <= MaximumFailureReasonLength
-            ? message
-            : message[..MaximumFailureReasonLength];
+    private static string GetPublicProviderMessage(ModelProviderErrorCode code)
+    {
+        return code switch
+        {
+            ModelProviderErrorCode.Authentication =>
+                "The model provider rejected the API credential.",
+            ModelProviderErrorCode.PermissionDenied =>
+                "The model provider denied access to the requested resource.",
+            ModelProviderErrorCode.RateLimited =>
+                "The model provider rate limit was exceeded.",
+            ModelProviderErrorCode.InvalidRequest =>
+                "The model provider rejected the request.",
+            ModelProviderErrorCode.Unavailable =>
+                "The model provider is temporarily unavailable.",
+            ModelProviderErrorCode.Timeout =>
+                "The model provider request timed out.",
+            ModelProviderErrorCode.Protocol or ModelProviderErrorCode.InvalidResponse =>
+                "The model provider returned an invalid response.",
+            ModelProviderErrorCode.Cancelled =>
+                "The model provider cancelled the request before completion.",
+            ModelProviderErrorCode.UnsupportedFeature =>
+                "The model provider does not support the requested operation.",
+            _ => "The model provider request failed.",
+        };
     }
 
     private sealed class HeartbeatState

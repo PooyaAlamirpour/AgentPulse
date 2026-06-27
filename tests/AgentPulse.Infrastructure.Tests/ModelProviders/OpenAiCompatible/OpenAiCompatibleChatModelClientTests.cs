@@ -69,6 +69,30 @@ public sealed class OpenAiCompatibleChatModelClientTests
     }
 
     [Fact]
+    public async Task Request_model_override_does_not_mutate_provider_defaults()
+    {
+        await using var server = SuccessfulServer();
+        var options = CreateOptions(server.BaseUri);
+        options.Model = "default-model";
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+        var requestModel = new ChatModelRequest(
+        [
+            new ChatModelMessage(ChatModelRole.System, SystemPrompt),
+            new ChatModelMessage(ChatModelRole.User, UserPrompt),
+        ],
+        "custom-model");
+
+        await foreach (var _ in client.StreamAsync(requestModel, CancellationToken.None))
+        {
+        }
+
+        var request = await server.Request;
+        using var document = JsonDocument.Parse(request.Body);
+        Assert.Equal("custom-model", document.RootElement.GetProperty("model").GetString());
+        Assert.Equal("default-model", options.Model);
+    }
+
+    [Fact]
     public async Task Custom_api_key_header_is_transmitted_without_default_or_bearer_headers()
     {
         await using var server = SuccessfulServer();
@@ -85,7 +109,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
     }
 
     [Fact]
-    public async Task Credential_is_trimmed_before_transmission()
+    public async Task Ordinary_surrounding_spaces_are_normalized_after_raw_validation()
     {
         await using var server = SuccessfulServer();
         var client = CreateClient(
@@ -101,6 +125,8 @@ public sealed class OpenAiCompatibleChatModelClientTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
+    [InlineData("\rsecret-key")]
+    [InlineData("secret-key\n")]
     [InlineData("bad\rkey")]
     [InlineData("bad\nkey")]
     [InlineData("bad\r\nkey")]
@@ -155,17 +181,119 @@ public sealed class OpenAiCompatibleChatModelClientTests
         Assert.DoesNotContain(SystemPrompt, exception.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain(UserPrompt, exception.ToString(), StringComparison.Ordinal);
         Assert.Equal(statusCode is 401 or 403 ? 1 : 0, credential.RejectedCalls);
+        Assert.False(exception.CredentialCleanupFailed);
+        Assert.False(exception.CredentialCleanupTimedOut);
     }
 
     [Theory]
-    [InlineData("{\"error\":{\"message\":\"wrapped\",\"type\":\"wrapped-type\",\"code\":\"wrapped-code\"}}", "wrapped", "wrapped-type", "wrapped-code")]
-    [InlineData("{\"message\":\"unwrapped\",\"type\":\"plain-type\",\"code\":42}", "unwrapped", "plain-type", "42")]
-    [InlineData("plain text failure", "plain text failure", null, null)]
-    [InlineData("", null, null, null)]
-    [InlineData("{broken", "{broken", null, null)]
-    public async Task Parses_standard_and_non_standard_error_bodies(
+    [InlineData("{\"error\":{\"message\":\"rejected\"}}")]
+    [InlineData("")]
+    [InlineData("{broken")]
+    public async Task Unauthorized_cleanup_does_not_depend_on_error_body_shape(string body)
+    {
+        await using var server = ErrorServer(401, body);
+        var credential = new RecordingCredentialSession(Secret);
+        var client = CreateClient(CreateOptions(server.BaseUri), credential);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.Equal(HttpStatusCode.Unauthorized, exception.HttpStatusCode);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.False(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(1, credential.RejectedCalls);
+    }
+
+    [Theory]
+    [InlineData(401, ModelProviderErrorCode.Authentication)]
+    [InlineData(403, ModelProviderErrorCode.PermissionDenied)]
+    public async Task Credential_cleanup_and_error_body_timeouts_preserve_provider_failure(
+        int statusCode,
+        ModelProviderErrorCode expectedCode)
+    {
+        var cleanupStarted = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = HangingErrorServer(statusCode);
+        var credential = new RecordingCredentialSession(
+            Secret,
+            async cancellationToken =>
+            {
+                cleanupStarted.TrySetResult(true);
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            });
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(750);
+        var client = CreateClient(options, credential);
+
+        var run = ReadAllAsync(client);
+        await cleanupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => run);
+
+        Assert.Equal(expectedCode, exception.Code);
+        Assert.Equal((HttpStatusCode)statusCode, exception.HttpStatusCode);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.True(exception.CredentialCleanupFailed);
+        Assert.True(exception.CredentialCleanupTimedOut);
+        Assert.True(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(1, credential.RejectedCalls);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "provider-store")]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "io")]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "invalid-operation")]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "object-disposed")]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "not-supported")]
+    [InlineData(401, ModelProviderErrorCode.Authentication, "argument")]
+    [InlineData(403, ModelProviderErrorCode.PermissionDenied, "invalid-operation")]
+    public async Task Non_fatal_cleanup_exception_preserves_provider_failure(
+        int statusCode,
+        ModelProviderErrorCode expectedCode,
+        string exceptionKind)
+    {
+        const string cleanupDetails = "credential cleanup details must stay private";
+        var body = statusCode == 401 ? "{broken" : string.Empty;
+        await using var server = ErrorServer(statusCode, body);
+        var credential = new RecordingCredentialSession(
+            Secret,
+            _ => Task.FromException(CreateCleanupException(exceptionKind, cleanupDetails)));
+        var client = CreateClient(CreateOptions(server.BaseUri), credential);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(expectedCode, exception.Code);
+        Assert.Equal((HttpStatusCode)statusCode, exception.HttpStatusCode);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.True(exception.CredentialCleanupFailed);
+        Assert.False(exception.CredentialCleanupTimedOut);
+        Assert.False(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(1, credential.RejectedCalls);
+        Assert.DoesNotContain(cleanupDetails, exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Fatal_cleanup_exception_is_not_swallowed()
+    {
+        await using var server = ErrorServer(401, string.Empty);
+        var credential = new RecordingCredentialSession(
+            Secret,
+            _ => Task.FromException(new BadImageFormatException("fatal cleanup failure")));
+        var client = CreateClient(CreateOptions(server.BaseUri), credential);
+
+        await Assert.ThrowsAsync<BadImageFormatException>(() => ReadAllAsync(client));
+        Assert.Equal(1, credential.RejectedCalls);
+    }
+
+    [Theory]
+    [InlineData("{\"error\":{\"message\":\"wrapped\",\"type\":\"wrapped-type\",\"code\":\"wrapped-code\"}}", "wrapped-type", "wrapped-code")]
+    [InlineData("{\"message\":\"unwrapped\",\"type\":\"plain-type\",\"code\":42}", "plain-type", "42")]
+    [InlineData("plain text failure", null, null)]
+    [InlineData("", null, null)]
+    [InlineData("{broken", null, null)]
+    public async Task Parses_only_safe_error_metadata_and_uses_a_generic_public_message(
         string body,
-        string? expectedMessage,
         string? expectedType,
         string? expectedCode)
     {
@@ -174,15 +302,10 @@ public sealed class OpenAiCompatibleChatModelClientTests
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
 
-        if (expectedMessage is null)
-        {
-            Assert.Equal("The model endpoint returned HTTP 400.", exception.Message);
-        }
-        else
-        {
-            Assert.Contains(expectedMessage, exception.Message, StringComparison.Ordinal);
-        }
-
+        Assert.Equal("The model provider rejected the request.", exception.Message);
+        Assert.DoesNotContain("wrapped", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("unwrapped", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("plain text failure", exception.Message, StringComparison.Ordinal);
         Assert.Equal(expectedType, exception.ProviderErrorType);
         Assert.Equal(expectedCode, exception.ProviderErrorCode);
     }
@@ -209,9 +332,10 @@ public sealed class OpenAiCompatibleChatModelClientTests
         var rendered = exception.ToString();
 
         Assert.Equal(TimeSpan.FromSeconds(9), exception.RetryAfter);
-        Assert.Equal("request-[REDACTED]", exception.RequestId);
-        Assert.Equal("type-[REDACTED]", exception.ProviderErrorType);
-        Assert.Equal("code-[REDACTED]", exception.ProviderErrorCode);
+        Assert.Null(exception.RequestId);
+        Assert.Null(exception.ProviderErrorType);
+        Assert.Null(exception.ProviderErrorCode);
+        Assert.Equal("The model provider rate limit was exceeded.", exception.Message);
         Assert.DoesNotContain("api_key=", rendered, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(Secret, rendered, StringComparison.Ordinal);
         Assert.DoesNotContain(SystemPrompt, rendered, StringComparison.Ordinal);
@@ -249,14 +373,16 @@ public sealed class OpenAiCompatibleChatModelClientTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         });
         var options = CreateOptions(server.BaseUri);
-        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(400);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(750);
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
 
         var run = ReadAllAsync(client);
         await headersSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => run);
 
-        Assert.Equal(ModelProviderErrorCode.Timeout, exception.Code);
+        Assert.Equal(ModelProviderErrorCode.InvalidRequest, exception.Code);
+        Assert.Equal(HttpStatusCode.BadRequest, exception.HttpStatusCode);
+        Assert.True(exception.ErrorBodyReadTimedOut);
         Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
         Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
     }
@@ -290,6 +416,183 @@ public sealed class OpenAiCompatibleChatModelClientTests
 
         Assert.Equal(ModelProviderErrorCode.Cancelled, exception.Code);
         Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+    }
+
+    [Theory]
+    [InlineData(401, ModelProviderErrorCode.Authentication)]
+    [InlineData(403, ModelProviderErrorCode.PermissionDenied)]
+    [InlineData(429, ModelProviderErrorCode.RateLimited)]
+    [InlineData(500, ModelProviderErrorCode.Unavailable)]
+    public async Task Hanging_error_body_preserves_status_mapping_and_timeout_metadata(
+        int statusCode,
+        ModelProviderErrorCode expectedCode)
+    {
+        await using var server = HangingErrorServer(statusCode);
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(750);
+        var credential = new RecordingCredentialSession(Secret);
+        var client = CreateClient(options, credential);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(expectedCode, exception.Code);
+        Assert.Equal((HttpStatusCode)statusCode, exception.HttpStatusCode);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.True(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(statusCode is 401 or 403 ? 1 : 0, credential.RejectedCalls);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Stored_credential_is_deleted_before_a_hanging_unauthorized_body_is_read()
+    {
+        await using var server = HangingErrorServer(401);
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(750);
+        var store = new TrackingCredentialStore(Secret);
+        var session = new ProviderCredentialSession(store, options.CreateCredentialScope());
+        session.Set(Secret, ProviderCredentialSource.Stored);
+        var client = CreateClient(options, session);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.Equal(HttpStatusCode.Unauthorized, exception.HttpStatusCode);
+        Assert.True(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(1, store.DeleteCount);
+        Assert.Null(store.Credential);
+    }
+
+    [Fact]
+    public async Task Stored_credential_cleanup_completes_before_user_cancels_hanging_unauthorized_body()
+    {
+        var headersSent = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await LocalModelServer.WriteAsync(
+                stream,
+                "HTTP/1.1 401 Unauthorized\r\n" +
+                "Content-Length: 100\r\n" +
+                "Connection: close\r\n\r\npartial",
+                cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+            headersSent.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        });
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromSeconds(5);
+        var store = new TrackingCredentialStore(Secret);
+        var session = new ProviderCredentialSession(store, options.CreateCredentialScope());
+        session.Set(Secret, ProviderCredentialSource.Stored);
+        var client = CreateClient(options, session);
+        using var cancellation = new CancellationTokenSource();
+
+        var run = ReadAllAsync(client, cancellation.Token);
+        await headersSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(() => store.DeleteCount == 1, TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+        var exception = await Assert.ThrowsAsync<ModelProviderOperationCanceledException>(() => run);
+
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.Equal(1, store.DeleteCount);
+        Assert.Null(store.Credential);
+    }
+
+    [Fact]
+    public async Task Legacy_credential_cleanup_deletes_scoped_and_legacy_copies_on_unauthorized()
+    {
+        await using var server = ErrorServer(401, string.Empty);
+        var options = CreateOptions(server.BaseUri);
+        var store = new TrackingCredentialStore(Secret)
+        {
+            LegacyCredential = Secret,
+        };
+        var session = new ProviderCredentialSession(
+            store,
+            store,
+            options.CreateCredentialScope());
+        session.Set(Secret, ProviderCredentialSource.LegacyStored);
+        var client = CreateClient(options, session);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.False(exception.CredentialCleanupFailed);
+        Assert.Equal(1, store.DeleteCount);
+        Assert.Equal(1, store.DeleteLegacyCount);
+        Assert.Null(store.Credential);
+        Assert.Null(store.LegacyCredential);
+    }
+
+    [Fact]
+    public async Task Prompt_credential_does_not_delete_store_on_unauthorized()
+    {
+        await using var server = ErrorServer(401, string.Empty);
+        var options = CreateOptions(server.BaseUri);
+        var store = new TrackingCredentialStore();
+        var session = new ProviderCredentialSession(store, options.CreateCredentialScope());
+        session.Set(Secret, ProviderCredentialSource.Prompt);
+        var client = CreateClient(options, session);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.False(exception.CredentialCleanupFailed);
+        Assert.Equal(0, store.DeleteCount);
+    }
+
+    [Fact]
+    public async Task Environment_credential_is_not_mutated_when_forbidden_body_hangs()
+    {
+        await using var server = HangingErrorServer(403);
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(750);
+        var store = new TrackingCredentialStore();
+        var session = new ProviderCredentialSession(store, options.CreateCredentialScope());
+        session.Set(Secret, ProviderCredentialSource.Environment);
+        var client = CreateClient(options, session);
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.PermissionDenied, exception.Code);
+        Assert.Equal(HttpStatusCode.Forbidden, exception.HttpStatusCode);
+        Assert.True(exception.ErrorBodyReadTimedOut);
+        Assert.Equal(0, store.DeleteCount);
+    }
+
+    [Theory]
+    [InlineData(SystemPrompt)]
+    [InlineData("Private system")]
+    [InlineData("Private   user history")]
+    [InlineData(UserPrompt)]
+    [InlineData(Secret)]
+    [InlineData("Authorization: Bearer provider-test-secret-never-log")]
+    [InlineData("https://provider.example/fail?token=private-value")]
+    public async Task Provider_error_message_is_never_exposed_to_public_exceptions(
+        string providerMessage)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            error = new
+            {
+                message = providerMessage,
+                type = "invalid_request_error",
+                code = "invalid_request",
+            },
+        });
+        await using var server = ErrorServer(400, body);
+        var client = CreateClient(CreateOptions(server.BaseUri), new RecordingCredentialSession(Secret));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal("The model provider rejected the request.", exception.Message);
+        Assert.DoesNotContain(providerMessage, exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(SystemPrompt, exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(UserPrompt, exception.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+        Assert.Equal("invalid_request_error", exception.ProviderErrorType);
+        Assert.Equal("invalid_request", exception.ProviderErrorCode);
     }
 
     [Theory]
@@ -376,14 +679,14 @@ public sealed class OpenAiCompatibleChatModelClientTests
     {
         await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(600), cancellationToken);
             await LocalModelServer.WriteSseHeadersAsync(stream, cancellationToken);
             await stream.FlushAsync(cancellationToken);
-            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(600), cancellationToken);
             await LocalModelServer.WriteAsync(stream, Data("late"), cancellationToken);
         });
         var options = CreateOptions(server.BaseUri);
-        options.FirstByteTimeout = TimeSpan.FromMilliseconds(500);
+        options.FirstByteTimeout = TimeSpan.FromSeconds(1);
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
@@ -400,7 +703,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         });
         var options = CreateOptions(server.BaseUri);
-        options.FirstByteTimeout = TimeSpan.FromMilliseconds(400);
+        options.FirstByteTimeout = TimeSpan.FromMilliseconds(750);
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
@@ -418,7 +721,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         });
         var options = CreateOptions(server.BaseUri);
-        options.FirstByteTimeout = TimeSpan.FromMilliseconds(250);
+        options.FirstByteTimeout = TimeSpan.FromMilliseconds(750);
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
@@ -438,7 +741,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
             await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
         });
         var options = CreateOptions(server.BaseUri);
-        options.StreamIdleTimeout = TimeSpan.FromMilliseconds(250);
+        options.StreamIdleTimeout = TimeSpan.FromMilliseconds(750);
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
         var deltas = new List<string>();
 
@@ -534,6 +837,21 @@ public sealed class OpenAiCompatibleChatModelClientTests
         });
     }
 
+    private static LocalModelServer HangingErrorServer(int statusCode)
+    {
+        return new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await LocalModelServer.WriteAsync(
+                stream,
+                $"HTTP/1.1 {statusCode} {Reason(statusCode)}\r\n" +
+                "Content-Length: 100\r\n" +
+                "Connection: close\r\n\r\npartial",
+                cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        });
+    }
+
     private static LocalModelServer ErrorServer(
         int statusCode,
         string body,
@@ -596,6 +914,17 @@ public sealed class OpenAiCompatibleChatModelClientTests
         return events;
     }
 
+    private static async Task WaitUntilAsync(
+        Func<bool> condition,
+        TimeSpan timeout)
+    {
+        using var cancellation = new CancellationTokenSource(timeout);
+        while (!condition())
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(25), cancellation.Token);
+        }
+    }
+
     private static string[] TextDeltas(IEnumerable<ModelStreamEvent> events)
     {
         return events.OfType<ModelStreamEvent.TextDelta>()
@@ -645,7 +974,91 @@ public sealed class OpenAiCompatibleChatModelClientTests
         }
     }
 
-    private sealed class RecordingCredentialSession(string credential)
+    private sealed class TrackingCredentialStore(string? credential = null)
+        : IProviderCredentialStore, ILegacyProviderCredentialStore
+    {
+        public string? Credential { get; private set; } = credential;
+
+        public string? LegacyCredential { get; set; }
+
+        public int DeleteCount { get; private set; }
+
+        public int DeleteLegacyCount { get; private set; }
+
+        public Task<string?> GetAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Credential);
+        }
+
+        public Task SaveAsync(
+            ProviderCredentialScope scope,
+            string credentialValue,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Credential = credentialValue;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Credential = null;
+            DeleteCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> ExistsAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(Credential is not null);
+        }
+
+        public Task<string?> GetLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(LegacyCredential);
+        }
+
+        public Task DeleteLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LegacyCredential = null;
+            DeleteLegacyCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> LegacyExistsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(LegacyCredential is not null);
+        }
+    }
+
+    private static Exception CreateCleanupException(string kind, string message)
+    {
+        return kind switch
+        {
+            "provider-store" => new ProviderCredentialStoreException(message),
+            "io" => new IOException(message),
+            "invalid-operation" => new InvalidOperationException(message),
+            "object-disposed" => new ObjectDisposedException("credential-store", message),
+            "not-supported" => new NotSupportedException(message),
+            "argument" => new ArgumentException(message),
+            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown test exception kind."),
+        };
+    }
+
+    private sealed class RecordingCredentialSession(
+        string credential,
+        Func<CancellationToken, Task>? rejection = null)
         : IProviderCredentialSession
     {
         public int AcceptedCalls { get; private set; }
@@ -667,7 +1080,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
             CancellationToken cancellationToken = default)
         {
             RejectedCalls++;
-            return Task.CompletedTask;
+            return rejection?.Invoke(cancellationToken) ?? Task.CompletedTask;
         }
     }
 }

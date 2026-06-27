@@ -24,6 +24,29 @@ public sealed class RunLeaseRepository(AgentPulseDbContext dbContext) : IRunLeas
         await dbContext.RunLeases.AddAsync(runLease, cancellationToken);
     }
 
+    public Task<RunLeaseId?> GetLeaseIdAsync(
+        SessionId sessionId,
+        CancellationToken cancellationToken = default)
+    {
+        return dbContext.RunLeases
+            .Where(runLease => runLease.SessionId == sessionId)
+            .Select(runLease => (RunLeaseId?)runLease.LeaseId)
+            .SingleOrDefaultAsync(cancellationToken);
+    }
+
+    public async Task<bool> RemoveOwnedAsync(
+        SessionId sessionId,
+        RunLeaseId leaseId,
+        CancellationToken cancellationToken = default)
+    {
+        var removed = await dbContext.RunLeases
+            .Where(runLease =>
+                runLease.SessionId == sessionId &&
+                runLease.LeaseId == leaseId)
+            .ExecuteDeleteAsync(cancellationToken);
+        return removed == 1;
+    }
+
     public void Remove(RunLease runLease)
     {
         ArgumentNullException.ThrowIfNull(runLease);

@@ -24,29 +24,40 @@ public sealed class EndSessionRun(
                 SessionRunErrorCode.SessionNotFound,
                 $"Session '{sessionId}' does not exist or is no longer available.");
 
-        var runLease = await runLeaseRepository.GetBySessionIdAsync(
+        var released = await runLeaseRepository.RemoveOwnedAsync(
             sessionId,
-            cancellationToken)
-            ?? throw new SessionRunException(
+            leaseId,
+            cancellationToken);
+
+        if (!released)
+        {
+            var currentOwner = await runLeaseRepository.GetLeaseIdAsync(
+                sessionId,
+                cancellationToken);
+
+            if (currentOwner is not null)
+            {
+                throw new SessionRunException(
+                    SessionRunErrorCode.RunLeaseOwnershipMismatch,
+                    "The run lease can only be released by its owner.");
+            }
+
+            if (session.Status == SessionStatus.Idle)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return;
+            }
+
+            throw new SessionRunException(
                 SessionRunErrorCode.RunLeaseNotFound,
                 $"Session '{sessionId}' has no active run lease.");
-
-        if (runLease.LeaseId != leaseId)
-        {
-            throw new SessionRunException(
-                SessionRunErrorCode.RunLeaseOwnershipMismatch,
-                "The run lease can only be released by its owner.");
         }
 
-        if (session.Status != SessionStatus.Running)
+        if (session.Status == SessionStatus.Running)
         {
-            throw new SessionRunException(
-                SessionRunErrorCode.InvalidSessionState,
-                $"Session '{sessionId}' is not running.");
+            session.Stop(utcNow);
         }
 
-        runLeaseRepository.Remove(runLease);
-        session.Stop(utcNow);
         await unitOfWork.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
     }

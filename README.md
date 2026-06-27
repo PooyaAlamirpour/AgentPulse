@@ -2,10 +2,10 @@
 
 **AgentPulse** is an open-source, cross-platform .NET 8 command-line assistant with project-aware prompts, persistent conversations, real-time model streaming, secure endpoint-scoped credentials, Git-aware context, and recovery-safe session state.
 
-The implementation is developed through a 10-phase roadmap. **Phase 7 is complete**: Xiaomi MiMo remains the default provider profile, while the runtime transport is now a single hardened OpenAI-compatible client that supports a configurable endpoint, model, authentication mode, SSE streaming, bounded error parsing, redirect protection, and failure-stage tracking.
+The implementation is developed through a 10-phase roadmap. **Phase 8 is complete**: the CLI now connects canonical project resolution, session creation or continuation, a cross-process session run lease, ordered history construction, request-level model overrides, immediate console streaming, periodic partial persistence, and terminal completion, cancellation, or failure handling.
 
-> **Development status:** Active development — **8 of 10 phases completed**
-> **Current milestone:** Phase 7 — OpenAI-Compatible Provider Generalization and Hardening
+> **Development status:** Active development — **9 of 10 phases completed**
+> **Current milestone:** Phase 8 — Final Vertical Prompt Flow and Session Reliability
 > **Default provider profile:** Xiaomi MiMo, model `mimo-v2.5-pro`
 
 > [!WARNING]
@@ -18,10 +18,17 @@ The implementation is developed through a 10-phase roadmap. **Phase 7 is complet
 ### CLI
 
 - `agentpulse --help`
-- `agentpulse run [message...]`
-- Prompt input from arguments or redirected `stdin`
-- Immediate streaming of model text to `stdout`
-- Errors and credential prompts on `stderr`
+- `agentpulse run "prompt"`
+- `agentpulse run --dir <path> "prompt"`
+- `agentpulse run --model <model> "prompt"`
+- `agentpulse run --session <id> "prompt"`
+- Prompt input from a positional argument or redirected `stdin`; a positional prompt takes precedence
+- Git-aware canonical project get-or-create without changing the process working directory; repository subdirectories resolve to the same project
+- New sessions by default, or ordered completed-history continuation through `--session`
+- One database-backed active run per session across processes
+- Request-level `--model` override without mutating global configuration
+- Immediate streaming of model text to `stdout` with periodic partial persistence
+- Session metadata, errors, and credential prompts on `stderr`; successful runs print `Session ID: <id>` after streaming completes
 - A single final newline after successful completion
 - `Ctrl+C` cancellation with exit code `130`
 - Non-zero exit codes for provider, persistence, configuration, and input failures
@@ -129,7 +136,7 @@ Supported authentication modes are:
 - `Bearer` → `Authorization: Bearer <API_KEY>`
 - `ApiKeyHeader` → `<ApiKeyHeaderName>: <API_KEY>`
 
-Sensitive or transport-controlled header names such as `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, proxy authentication headers, cookie headers, `Content-Type`, and `Authorization` are rejected for `ApiKeyHeader` mode. `ApiKeyHeaderName` is ignored in `Bearer` mode. API credentials are trimmed at their outer edges and rejected before any HTTP request when they are empty or contain CR, LF, NUL, tab, DEL, or another control character.
+Sensitive or transport-controlled header names such as `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, proxy authentication headers, cookie headers, `Content-Type`, and `Authorization` are rejected for `ApiKeyHeader` mode. `ApiKeyHeaderName` is ignored in `Bearer` mode. Every raw API credential is validated before normalization: CR, LF, NUL, tab, DEL, and all other control characters are rejected wherever they occur. Only ordinary ASCII spaces at the beginning or end may be removed after validation; general whitespace trimming is never used.
 
 ### Configuration Precedence
 
@@ -167,7 +174,7 @@ Credential resolution for `run` uses this order:
 2. The securely stored credential for the current endpoint scope
 3. A hidden interactive prompt
 
-An environment credential is never copied into the credential store. A prompted credential is stored only after a successful streamed provider response begins. A valid scoped stored credential is reused without being rewritten after each successful run. A stored credential rejected with `401` or `403` is removed only from the current endpoint scope.
+An environment credential is never copied into the credential store. A prompted credential is stored only after a successful streamed provider response begins. A valid scoped stored credential is reused without being rewritten after each successful run. As soon as a `401` or `403` response header is received, the rejected stored credential is invalidated for the current endpoint scope before the error body is read; cleanup therefore still occurs when that body is malformed, incomplete, or times out. Environment credentials are never modified.
 
 A credential scope is derived from non-secret endpoint identity:
 
@@ -207,9 +214,9 @@ The exact operating-system path is derived at runtime. Credentials are never sto
 - Remote HTTP endpoints are rejected; loopback HTTP remains available for local contract tests and development.
 - `301`, `302`, `303`, `307`, and `308` are converted to provider errors instead of being followed.
 - Redirect locations and provider error URLs are sanitized by removing user information, query strings, and fragments.
-- Error bodies are read only up to a bounded limit and within `ErrorBodyReadTimeout` (default `00:00:10`); timeout maps to `Timeout / BeforeFirstToken` and user cancellation remains distinct.
+- Error bodies are read only up to a bounded limit and within `ErrorBodyReadTimeout` (default `00:00:10`). If reading times out, the already-known HTTP status, provider-independent error kind, retry metadata, and `BeforeFirstToken` stage are preserved while `ErrorBodyReadTimedOut` is set; user cancellation remains distinct.
 - `FirstByteTimeout` is one deadline from `SendAsync` start through response headers and the first body byte; it is not restarted after headers.
-- API keys, authorization headers, request bodies, system prompts, and conversation history are not retained in provider exceptions.
+- Public provider exceptions use fixed messages selected from the error taxonomy. Raw provider messages and complete error bodies are not retained or printed, so echoed API keys, request bodies, system prompts, and conversation history cannot reach normal CLI output. Only bounded, token-safe provider type/code, request ID, retry metadata, status, stage, and timeout state may be retained.
 
 ### Persistence and Recovery
 
@@ -247,7 +254,7 @@ The exact operating-system path is derived at runtime. Credentials are never sto
 - Infrastructure owns the single OpenAI-compatible transport, SSE parser, secure credentials, EF Core, and SQLite
 - CLI owns hidden input, configuration composition, console rendering, commands, and exit codes
 - Nullable reference types enabled and warnings treated as errors
-- Deterministic tests use local HTTP servers and temporary credential/database roots
+- Deterministic tests use local HTTP servers and per-test temporary credential/database roots; Host tests do not create or read the real user-scoped AgentPulse data directories
 - Normal tests require neither internet access nor an API key
 
 ---
@@ -341,11 +348,17 @@ MIMO_API_KEY="..." AGENTPULSE_RUN_LIVE_TESTS="1" \
 
 ## Running AgentPulse
 
-### First Interactive Run
+### Prompt Runs
 
 ```bash
-dotnet run --project src/AgentPulse.Cli -- run "Reply with exactly: Hello"
+dotnet run --project src/AgentPulse.Cli -- run "Explain this project"
+dotnet run --project src/AgentPulse.Cli -- run --dir <path> "Explain this project"
+dotnet run --project src/AgentPulse.Cli -- run --model <model> "Explain this project"
+dotnet run --project src/AgentPulse.Cli -- run --session <id> "Continue the conversation"
+echo "Explain this project" | dotnet run --project src/AgentPulse.Cli -- run
 ```
+
+A run without `--session` creates a new session and prints `Session ID: <id>` to `stderr` after the streamed response finishes. Reuse that ID with `--session` to continue the completed message history. Running from any subdirectory of the same Git worktree resolves to the same canonical project, so continuation works from the repository root or its descendants. Model text and its final newline are the only content written to `stdout`; session metadata and errors stay on `stderr`, so redirecting `stdout` produces a clean response file. Only one run may be active in a session at a time. `Ctrl+C` or a failure preserves the partial assistant response, finalizes the session when possible, and releases the owned lease. JSON event output, attach, fork, and tool calling are not supported in this phase.
 
 When no credential exists for the current endpoint, the CLI requests it with hidden input. After a successful provider response, it is protected for that endpoint scope.
 
@@ -366,7 +379,7 @@ MIMO_API_KEY="..." dotnet run --project src/AgentPulse.Cli -- run "Explain this 
 
 ### Redirected Standard Input
 
-A redirected process cannot securely read a missing credential from the same stream. Configure the current endpoint with `auth set` or its configured API-key environment variable first.
+When no positional prompt is supplied, redirected `stdin` is read in full and only trailing pipe line endings are removed. A positional prompt takes precedence and prevents reading `stdin`. A redirected process cannot securely read a missing credential from the same stream, so configure the current endpoint with `auth set` or its configured API-key environment variable first.
 
 ### Credential Commands
 
@@ -390,32 +403,29 @@ dotnet run --project src/AgentPulse.Cli -- auth clear
 | 5 | ✅ | Model Request Construction | Provider-independent messages, history, project system context |
 | 6 | ✅ | Real Xiaomi Streaming and Secure Credentials | Real HTTP streaming, SSE, hidden credentials, partial persistence, full vertical flow |
 | 7 | ✅ | OpenAI-Compatible Provider Generalization and Hardening | Generic transport, endpoint scope, redirect defense, error taxonomy, failure stages |
-| 8 | ⬜ | Session Continuation and Reliability | Explicit continuation, session selection, recovery and CLI reliability |
+| 8 | ✅ | Final Vertical Prompt Flow and Session Reliability | Project/session resolution, cross-process lease, history, model override, stdin, streaming checkpoints, terminal state handling |
 | 9 | ⬜ | Final Compatibility, Packaging, and Release | Baseline comparison, process tests, packaging, final documentation, release readiness |
 
 Later phases remain planned and are not marked complete.
 
 ---
 
-## Phase 7 Test Coverage
+## Phase 8 Test Coverage
 
-Phase 7 adds or preserves deterministic coverage for:
+Phase 8 adds or preserves deterministic coverage for:
 
-- Default Xiaomi and generic Bearer provider profiles
-- JSON, environment-specific JSON, and environment-variable configuration precedence, plus Build/Publish copy metadata
-- Custom endpoint, path, model, authentication mode, header name, and API-key environment-variable name
-- Fail-fast validation and absence of a bindable API-key option
-- Credential scope normalization and isolation by host, scheme, port, authentication mode, and header name
-- Prompt/environment/stored/legacy credential-source persistence rules, one-time legacy migration, and rejection for custom hosts
-- Scoped `auth set`, `auth status`, and idempotent `auth clear`
-- Redirect status handling and proof that the redirect target receives no request
-- Encoded and double-encoded traversal rejection, forbidden header names, and credential control-character rejection
-- OpenAI-compatible wrapped and unwrapped JSON errors, text, empty, malformed, and oversized bodies
-- Error-body size/deadline enforcement, cancellation distinction, error taxonomy, retry metadata, request ID, and sensitive-data sanitization
-- SSE fragmentation, multi-byte UTF-8, multi-line data, completion, usage, malformed and incomplete streams
-- One shared first-byte deadline and before/after-first-token failure stages for protocol errors, timeout, and cancellation
-- HTTP cancellation observed by the local contract server
-- Partial-output preservation in the existing streaming persistence flow
+- Positional prompt parsing, redirected multiline Unicode `stdin`, option ordering, duplicate/unknown options, missing values, and validation failures
+- Relative, absolute, missing, file, and space-containing project directories plus duplicate-safe project get-or-create
+- New-session execution and explicit existing-session continuation with stable, session-scoped completed history
+- Request-level model override with unchanged provider defaults on the next run
+- Cross-process-capable SQLite session leases, immediate busy rejection, owner-aware idempotent release, and reuse after success, failure, or cancellation
+- User and assistant placeholder persistence before the provider call
+- Immediate ordered console deltas and time-or-character checkpoint persistence without duplicate tokens
+- Completed assistant metadata, including effective model, finish reason, and usage
+- Cancellation before or during streaming and during final persistence, with partial response recovery and exit code `130` at the CLI boundary
+- Provider failure after partial output with sanitized error metadata and no raw provider body, prompt, history, or credential disclosure
+- Checkpoint persistence failure with failed terminal state where possible and unconditional owned-lease release
+- Real SQLite repositories and composition with a test-only controllable `IChatModelClient`; no fake provider is registered at runtime
 - Explicitly opt-in live Xiaomi connectivity only
 
 ---
@@ -438,8 +448,8 @@ Phase 7 adds or preserves deterministic coverage for:
 ## Project Status
 
 ```text
-Completed: Phase 0 through Phase 7
-Progress: 8 / 10 phases
+Completed: Phase 0 through Phase 8
+Progress: 9 / 10 phases
 ```
 
 ---

@@ -2,7 +2,9 @@ namespace AgentPulse.Application.ChatModels;
 
 public sealed class ChatModelRequest
 {
-    public ChatModelRequest(IEnumerable<ChatModelMessage> messages)
+    public ChatModelRequest(
+        IEnumerable<ChatModelMessage> messages,
+        string? model = null)
     {
         ArgumentNullException.ThrowIfNull(messages);
 
@@ -29,8 +31,16 @@ public sealed class ChatModelRequest
                 nameof(messages));
         }
 
+        if (model is not null)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(model);
+            Model = model.Trim();
+        }
+
         Messages = Array.AsReadOnly(copiedMessages);
     }
 
     public IReadOnlyList<ChatModelMessage> Messages { get; }
+
+    public string? Model { get; }
 }

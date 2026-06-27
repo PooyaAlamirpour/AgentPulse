@@ -14,6 +14,8 @@ public sealed class OpenAiCompatibleChatModelClient(
     OpenAiCompatibleSseParser sseParser,
     IProviderCredentialSession credentialSession) : IChatModelClient
 {
+    private static readonly TimeSpan CredentialCleanupTimeout = TimeSpan.FromSeconds(1);
+
     public const string HttpClientName = "AgentPulse.OpenAiCompatible";
 
     public async IAsyncEnumerable<ModelStreamEvent> StreamAsync(
@@ -23,8 +25,20 @@ public sealed class OpenAiCompatibleChatModelClient(
         ArgumentNullException.ThrowIfNull(request);
         options.Validate();
 
-        var credential = OpenAiCompatibleCredentialValidator.ValidateAndNormalize(
-            credentialSession.GetRequiredCredential());
+        string credential;
+        try
+        {
+            credential = ProviderCredentialValidator.ValidateAndNormalize(
+                credentialSession.GetRequiredCredential());
+        }
+        catch (ProviderCredentialValidationException exception)
+        {
+            throw new ModelProviderException(
+                ModelProviderErrorCode.Authentication,
+                exception.Message,
+                ModelFailureStage.BeforeFirstToken,
+                exception);
+        }
         var requestDto = OpenAiCompatibleChatRequestMapper.Map(request, options);
         var requestJson = JsonSerializer.Serialize(requestDto);
         var endpoint = OpenAiCompatibleEndpointBuilder.Build(
@@ -83,15 +97,21 @@ public sealed class OpenAiCompatibleChatModelClient(
             if (!response.IsSuccessStatusCode)
             {
                 DisableFirstByteDeadline(firstByteCancellation);
-                ModelProviderException error;
+
+                var credentialCleanup = response.StatusCode is
+                    HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
+                    ? await TryMarkAuthenticationRejectedAsync(credentialSession)
+                    : default;
+
                 try
                 {
-                    error = await OpenAiCompatibleProviderErrorParser.CreateExceptionAsync(
+                    throw await OpenAiCompatibleProviderErrorParser.CreateExceptionAsync(
                         response,
                         credential,
-                        request,
                         options.ErrorBodyReadTimeout,
-                        cancellationToken);
+                        cancellationToken,
+                        credentialCleanup.Failed,
+                        credentialCleanup.TimedOut);
                 }
                 catch (OperationCanceledException exception)
                     when (cancellationToken.IsCancellationRequested)
@@ -101,13 +121,6 @@ public sealed class OpenAiCompatibleChatModelClient(
                         cancellationToken,
                         exception);
                 }
-
-                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                {
-                    await credentialSession.MarkAuthenticationRejectedAsync(CancellationToken.None);
-                }
-
-                throw error;
             }
 
             Stream responseStream;
@@ -209,6 +222,42 @@ public sealed class OpenAiCompatibleChatModelClient(
             }
         }
     }
+
+    private static async Task<CredentialCleanupResult> TryMarkAuthenticationRejectedAsync(
+        IProviderCredentialSession session)
+    {
+        using var cleanupCancellation = new CancellationTokenSource(CredentialCleanupTimeout);
+
+        try
+        {
+            await session
+                .MarkAuthenticationRejectedAsync(cleanupCancellation.Token)
+                .WaitAsync(cleanupCancellation.Token);
+            return default;
+        }
+        catch (OperationCanceledException) when (cleanupCancellation.IsCancellationRequested)
+        {
+            return new CredentialCleanupResult(Failed: true, TimedOut: true);
+        }
+        catch (Exception exception) when (!IsFatalException(exception))
+        {
+            return new CredentialCleanupResult(Failed: true, TimedOut: false);
+        }
+    }
+
+    private static bool IsFatalException(Exception exception)
+    {
+        return exception is
+            OutOfMemoryException or
+            StackOverflowException or
+            AccessViolationException or
+            AppDomainUnloadedException or
+            BadImageFormatException or
+            CannotUnloadAppDomainException or
+            System.Runtime.InteropServices.SEHException;
+    }
+
+    private readonly record struct CredentialCleanupResult(bool Failed, bool TimedOut);
 
     private void ApplyAuthentication(HttpRequestMessage requestMessage, string credential)
     {

@@ -2,6 +2,7 @@ using System.Text;
 using System.Xml.Linq;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Hosting;
+using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using Microsoft.Extensions.Configuration;
 
@@ -88,8 +89,13 @@ public sealed class ModelConfigurationTests
         var originalModel = Environment.GetEnvironmentVariable(modelVariable);
         var root = Path.Combine(
             Path.GetTempPath(),
-            "AgentPulse.ConfigurationTests",
+            "AgentPulse Configuration Tests",
             Guid.NewGuid().ToString("N"));
+        var databasePath = Path.Combine(root, "data with spaces", "agentpulse.db");
+        var credentialRootPath = Path.Combine(root, "credentials with spaces");
+        var userScopePath = GetDefaultUserScopePath();
+        var userScopeExisted = Directory.Exists(userScopePath);
+        var userScopeSnapshot = SnapshotFiles(userScopePath);
         Directory.CreateDirectory(root);
 
         try
@@ -122,6 +128,10 @@ public sealed class ModelConfigurationTests
             Environment.SetEnvironmentVariable(modelVariable, null);
             var environmentBuilder = AgentPulseHost.CreateBuilder(
                 new TestConsole(),
+                configuration => AddTestStorageOverrides(
+                    configuration,
+                    databasePath,
+                    credentialRootPath),
                 contentRootPath: root,
                 environmentName: "Test");
             Assert.Equal(
@@ -134,11 +144,17 @@ public sealed class ModelConfigurationTests
             Environment.SetEnvironmentVariable(modelVariable, "environment-variable-model");
             var variableBuilder = AgentPulseHost.CreateBuilder(
                 new TestConsole(),
+                configuration => AddTestStorageOverrides(
+                    configuration,
+                    databasePath,
+                    credentialRootPath),
                 contentRootPath: root,
                 environmentName: "Test");
             Assert.Equal(
                 "environment-variable-model",
                 variableBuilder.Configuration[$"{OpenAiCompatibleModelOptions.SectionName}:Model"]);
+            Assert.Equal(userScopeExisted, Directory.Exists(userScopePath));
+            Assert.Equal(userScopeSnapshot, SnapshotFiles(userScopePath));
         }
         finally
         {
@@ -218,22 +234,36 @@ public sealed class ModelConfigurationTests
     [Fact]
     public void Host_fails_fast_for_invalid_model_configuration()
     {
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            AgentPulseHost.CreateBuilder(
-                new TestConsole(),
-                configuration => configuration.AddInMemoryCollection(
-                    new Dictionary<string, string?>
-                    {
-                        [$"{OpenAiCompatibleModelOptions.SectionName}:BaseUrl"] =
-                            "http://provider.example/v1",
-                        ["AgentPulse:Persistence:DatabasePath"] = Path.Combine(
-                            Path.GetTempPath(),
-                            "agentpulse-invalid-model-options",
-                            Guid.NewGuid().ToString("N"),
-                            "agentpulse.db"),
-                    })));
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            "agentpulse-invalid-model-options",
+            Guid.NewGuid().ToString("N"));
 
-        Assert.Contains("HTTPS", exception.Message, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                AgentPulseHost.CreateBuilder(
+                    new TestConsole(),
+                    configuration => configuration.AddInMemoryCollection(
+                        new Dictionary<string, string?>
+                        {
+                            [$"{OpenAiCompatibleModelOptions.SectionName}:BaseUrl"] =
+                                "http://provider.example/v1",
+                            ["AgentPulse:Persistence:DatabasePath"] =
+                                Path.Combine(tempRoot, "data", "agentpulse.db"),
+                            [$"{ProviderCredentialStoreOptions.SectionName}:CredentialRootPath"] =
+                                Path.Combine(tempRoot, "security"),
+                        })));
+
+            Assert.Contains("HTTPS", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -269,6 +299,48 @@ public sealed class ModelConfigurationTests
         Assert.Equal(
             "PreserveNewest",
             item.Element("CopyToPublishDirectory")?.Value);
+    }
+
+    private static void AddTestStorageOverrides(
+        IConfigurationBuilder configuration,
+        string databasePath,
+        string credentialRootPath)
+    {
+        configuration.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["AgentPulse:Persistence:DatabasePath"] = databasePath,
+            [$"{ProviderCredentialStoreOptions.SectionName}:CredentialRootPath"] =
+                credentialRootPath,
+        });
+    }
+
+    private static string GetDefaultUserScopePath()
+    {
+        var localApplicationData = Environment.GetFolderPath(
+            Environment.SpecialFolder.LocalApplicationData,
+            Environment.SpecialFolderOption.DoNotVerify);
+        if (!string.IsNullOrWhiteSpace(localApplicationData))
+        {
+            return Path.Combine(localApplicationData, "AgentPulse");
+        }
+
+        var userProfile = Environment.GetFolderPath(
+            Environment.SpecialFolder.UserProfile,
+            Environment.SpecialFolderOption.DoNotVerify);
+        var root = OperatingSystem.IsMacOS()
+            ? Path.Combine(userProfile, "Library", "Application Support")
+            : Path.Combine(userProfile, ".local", "share");
+        return Path.Combine(root, "AgentPulse");
+    }
+
+    private static string[] SnapshotFiles(string rootPath)
+    {
+        return Directory.Exists(rootPath)
+            ? Directory.EnumerateFiles(rootPath, "*", SearchOption.AllDirectories)
+                .Select(path => Path.GetRelativePath(rootPath, path))
+                .Order(StringComparer.Ordinal)
+                .ToArray()
+            : [];
     }
 
     private static MemoryStream JsonStream(string json)

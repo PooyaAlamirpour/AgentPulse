@@ -8,6 +8,7 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
     private string? _credential;
     private ProviderCredentialSource _source;
     private bool _accepted;
+    private bool _rejected;
 
     public ProviderCredentialSession(IProviderCredentialStore credentialStore)
         : this(
@@ -38,7 +39,7 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
 
     public void Set(string credential, ProviderCredentialSource source)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(credential);
+        var normalizedCredential = ProviderCredentialValidator.ValidateAndNormalize(credential);
 
         if (!Enum.IsDefined(source))
         {
@@ -51,7 +52,7 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
                 "A provider credential has already been configured for this run.");
         }
 
-        _credential = credential.Trim();
+        _credential = normalizedCredential;
         _source = source;
     }
 
@@ -103,12 +104,18 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
                 "A provider credential was not configured for this run.");
         }
 
+        if (_rejected)
+        {
+            return;
+        }
+
         switch (_source)
         {
             case ProviderCredentialSource.Stored:
                 await _credentialStore.DeleteAsync(_scope, cancellationToken);
                 break;
             case ProviderCredentialSource.LegacyStored:
+                await _credentialStore.DeleteAsync(_scope, cancellationToken);
                 await _legacyCredentialStore.DeleteLegacyAsync(cancellationToken);
                 break;
             case ProviderCredentialSource.Environment:
@@ -117,6 +124,8 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
             default:
                 throw new InvalidOperationException("The credential source is not supported.");
         }
+
+        _rejected = true;
     }
 
     private sealed class NullLegacyProviderCredentialStore : ILegacyProviderCredentialStore

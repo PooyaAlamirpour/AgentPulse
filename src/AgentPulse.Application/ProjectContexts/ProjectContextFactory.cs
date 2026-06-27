@@ -9,9 +9,24 @@ public sealed class ProjectContextFactory(
     IPlatformProvider platformProvider,
     IProjectIdFactory projectIdFactory) : IProjectContextFactory
 {
-    public async Task<ProjectContext> CreateAsync(
+    public Task<ProjectContext> CreateAsync(
         string? inputPath,
         CancellationToken cancellationToken = default)
+    {
+        return CreateCoreAsync(inputPath, discoverGit: true, cancellationToken);
+    }
+
+    public Task<ProjectContext> CreateForRunAsync(
+        string? inputPath,
+        CancellationToken cancellationToken = default)
+    {
+        return CreateAsync(inputPath, cancellationToken);
+    }
+
+    private async Task<ProjectContext> CreateCoreAsync(
+        string? inputPath,
+        bool discoverGit,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -23,39 +38,47 @@ public sealed class ProjectContextFactory(
         var isGitRepository = false;
         string? gitWorktree = null;
 
-        try
+        if (discoverGit)
         {
-            if (await gitService.IsAvailableAsync(cancellationToken))
+            try
             {
-                var repository = await gitService.DiscoverAsync(currentDirectory, cancellationToken);
-                var discoveredRoot = TryResolveRepositoryRoot(repository, currentDirectory, platform);
-
-                if (discoveredRoot is not null)
+                if (await gitService.IsAvailableAsync(cancellationToken))
                 {
-                    projectRoot = discoveredRoot;
-                    isGitRepository = true;
-                    gitWorktree = discoveredRoot;
+                    var repository = await gitService.DiscoverAsync(
+                        currentDirectory,
+                        cancellationToken);
+                    var discoveredRoot = TryResolveRepositoryRoot(
+                        repository,
+                        currentDirectory,
+                        platform);
+
+                    if (discoveredRoot is not null)
+                    {
+                        projectRoot = discoveredRoot;
+                        isGitRepository = true;
+                        gitWorktree = discoveredRoot;
+                    }
                 }
             }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (ProcessTimeoutException exception)
-        {
-            throw new ProjectContextException(
-                ProjectContextErrorCode.GitProcessTimedOut,
-                "Git discovery timed out while building the project context.",
-                exception);
-        }
-        catch (Exception exception) when (
-            exception is ProcessStartException or ProcessExecutionException)
-        {
-            throw new ProjectContextException(
-                ProjectContextErrorCode.GitProcessFailed,
-                "Git failed while building the project context.",
-                exception);
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (ProcessTimeoutException exception)
+            {
+                throw new ProjectContextException(
+                    ProjectContextErrorCode.GitProcessTimedOut,
+                    "Git discovery timed out while building the project context.",
+                    exception);
+            }
+            catch (Exception exception) when (
+                exception is ProcessStartException or ProcessExecutionException)
+            {
+                throw new ProjectContextException(
+                    ProjectContextErrorCode.GitProcessFailed,
+                    "Git failed while building the project context.",
+                    exception);
+            }
         }
 
         var utcNow = clock.UtcNow;
@@ -72,7 +95,7 @@ public sealed class ProjectContextFactory(
 
         return new ProjectContext(
             currentDirectory,
-            projectRoot,
+            discoverGit ? projectRoot : canonicalProjectRoot,
             isGitRepository,
             gitWorktree,
             platform,

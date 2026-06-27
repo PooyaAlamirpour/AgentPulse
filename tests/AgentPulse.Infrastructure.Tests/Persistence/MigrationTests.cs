@@ -11,13 +11,14 @@ public sealed class MigrationTests
         await using var database = await SqliteTestDatabase.CreateAsync(migrate: false);
         await using var context = database.CreateContext();
 
-        Assert.Equal(2, (await context.Database.GetPendingMigrationsAsync()).Count());
+        Assert.Equal(3, (await context.Database.GetPendingMigrationsAsync()).Count());
 
         await context.Database.MigrateAsync();
 
         var appliedMigrations = await context.Database.GetAppliedMigrationsAsync();
         Assert.Contains("20260627120000_InitialDomainPersistence", appliedMigrations);
         Assert.Contains("20260627150000_AddSessionRunLifecycle", appliedMigrations);
+        Assert.Contains("20260627200000_AddRunMessageMetadata", appliedMigrations);
         Assert.Empty(await context.Database.GetPendingMigrationsAsync());
         Assert.Equal(nameof(InitialDomainPersistence), typeof(InitialDomainPersistence).Name);
     }

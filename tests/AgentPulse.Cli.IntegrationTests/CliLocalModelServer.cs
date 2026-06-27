@@ -10,20 +10,29 @@ internal sealed class CliLocalModelServer : IAsyncDisposable
     private readonly CancellationTokenSource _cancellation = new();
     private readonly Task _serverTask;
 
-    private CliLocalModelServer(bool hangAfterHeaders)
+    private CliLocalModelServer(bool hangAfterHeaders, int expectedRequestCount)
     {
+        if (expectedRequestCount <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(expectedRequestCount));
+        }
+
         _listener = new TcpListener(IPAddress.Loopback, 0);
         _listener.Start();
         var endpoint = (IPEndPoint)_listener.LocalEndpoint;
         BaseUrl = $"http://127.0.0.1:{endpoint.Port}/v1";
-        _serverTask = RunAsync(hangAfterHeaders);
+        _serverTask = RunAsync(hangAfterHeaders, expectedRequestCount);
     }
 
     public string BaseUrl { get; }
 
-    public static CliLocalModelServer StartSuccessful() => new(hangAfterHeaders: false);
+    public List<string> RequestBodies { get; } = [];
 
-    public static CliLocalModelServer StartHanging() => new(hangAfterHeaders: true);
+    public static CliLocalModelServer StartSuccessful(int expectedRequestCount = 1) =>
+        new(hangAfterHeaders: false, expectedRequestCount);
+
+    public static CliLocalModelServer StartHanging() =>
+        new(hangAfterHeaders: true, expectedRequestCount: 1);
 
     public async ValueTask DisposeAsync()
     {
@@ -44,41 +53,44 @@ internal sealed class CliLocalModelServer : IAsyncDisposable
         _cancellation.Dispose();
     }
 
-    private async Task RunAsync(bool hangAfterHeaders)
+    private async Task RunAsync(bool hangAfterHeaders, int expectedRequestCount)
     {
-        using var client = await _listener.AcceptTcpClientAsync(_cancellation.Token);
-        await using var stream = client.GetStream();
-        await ReadRequestAsync(stream, _cancellation.Token);
-        await WriteAsync(
-            stream,
-            "HTTP/1.1 200 OK\r\n" +
-            "Content-Type: text/event-stream\r\n" +
-            "Connection: close\r\n\r\n",
-            _cancellation.Token);
-        await stream.FlushAsync(_cancellation.Token);
-
-        if (hangAfterHeaders)
+        for (var requestNumber = 0; requestNumber < expectedRequestCount; requestNumber++)
         {
-            await Task.Delay(Timeout.InfiniteTimeSpan, _cancellation.Token);
-            return;
-        }
+            using var client = await _listener.AcceptTcpClientAsync(_cancellation.Token);
+            await using var stream = client.GetStream();
+            RequestBodies.Add(await ReadRequestAsync(stream, _cancellation.Token));
+            await WriteAsync(
+                stream,
+                "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: text/event-stream\r\n" +
+                "Connection: close\r\n\r\n",
+                _cancellation.Token);
+            await stream.FlushAsync(_cancellation.Token);
 
-        await WriteAsync(
-            stream,
-            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
-            _cancellation.Token);
-        await stream.FlushAsync(_cancellation.Token);
-        await Task.Yield();
-        await WriteAsync(
-            stream,
-            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n" +
-            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
-            "data: [DONE]\n\n",
-            _cancellation.Token);
-        await stream.FlushAsync(_cancellation.Token);
+            if (hangAfterHeaders)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, _cancellation.Token);
+                return;
+            }
+
+            await WriteAsync(
+                stream,
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hel\"},\"finish_reason\":null}]}\n\n",
+                _cancellation.Token);
+            await stream.FlushAsync(_cancellation.Token);
+            await Task.Yield();
+            await WriteAsync(
+                stream,
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lo\"},\"finish_reason\":null}]}\n\n" +
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n" +
+                "data: [DONE]\n\n",
+                _cancellation.Token);
+            await stream.FlushAsync(_cancellation.Token);
+        }
     }
 
-    private static async Task ReadRequestAsync(
+    private static async Task<string> ReadRequestAsync(
         NetworkStream stream,
         CancellationToken cancellationToken)
     {
@@ -123,6 +135,8 @@ internal sealed class CliLocalModelServer : IAsyncDisposable
 
             bytes.AddRange(buffer.AsSpan(0, read).ToArray());
         }
+
+        return Encoding.UTF8.GetString(bytes.Skip(bodyOffset).Take(contentLength).ToArray());
     }
 
     private static int FindHeaderEnd(IReadOnlyList<byte> bytes)

@@ -197,7 +197,7 @@ public sealed class XiaomiChatModelClientTests
         var client = CreateClient(
             server.BaseUri,
             new RecordingCredentialSession(Secret),
-            firstByteTimeout: TimeSpan.FromMilliseconds(300));
+            firstByteTimeout: TimeSpan.FromMilliseconds(750));
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() =>
             ReadAllAsync(client));
@@ -218,7 +218,7 @@ public sealed class XiaomiChatModelClientTests
         var client = CreateClient(
             server.BaseUri,
             new RecordingCredentialSession(Secret),
-            idleTimeout: TimeSpan.FromMilliseconds(300));
+            idleTimeout: TimeSpan.FromMilliseconds(750));
         var deltas = new List<string>();
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(async () =>

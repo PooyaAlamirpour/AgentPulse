@@ -36,6 +36,18 @@ internal sealed class MessageConfiguration : IEntityTypeConfiguration<Message>
         builder.Property(message => message.FailureReason)
             .HasMaxLength(1024);
 
+        builder.Property(message => message.Model)
+            .HasMaxLength(256);
+
+        builder.Property(message => message.FinishReason)
+            .HasMaxLength(64);
+
+        builder.Property(message => message.FailureKind)
+            .HasMaxLength(64);
+
+        builder.Property(message => message.FailureStage)
+            .HasMaxLength(64);
+
         builder.HasIndex(message => new { message.SessionId, message.Sequence })
             .IsUnique();
 

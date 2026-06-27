@@ -96,6 +96,8 @@ public sealed class HostCompositionTests
             Assert.NotNull(host.Services.GetRequiredService<IChatModelHistoryPolicy>());
             Assert.NotNull(host.Services.GetRequiredService<IChatModelRequestBuilder>());
 
+            Assert.NotNull(host.Services.GetRequiredService<ChatModelRunDefaults>());
+            Assert.NotNull(host.Services.GetRequiredService<IRunCommandParser>());
             Assert.NotNull(host.Services.GetRequiredService<IPromptInputReader>());
             Assert.NotNull(host.Services.GetRequiredService<IProviderCredentialStore>());
             Assert.NotNull(host.Services.GetRequiredService<ILegacyProviderCredentialStore>());
@@ -118,20 +120,35 @@ public sealed class HostCompositionTests
     [Fact]
     public void Host_rejects_unsafe_cross_lease_configuration()
     {
-        var exception = Assert.Throws<InvalidOperationException>(() =>
-            AgentPulseHost.CreateBuilder(
-                new TestConsole(),
-                configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    [$"{SessionRunOptions.SectionName}:LeaseDuration"] = "00:00:30",
-                    [$"{StreamingRunOptions.SectionName}:LeaseRenewInterval"] = "00:00:20",
-                    ["AgentPulse:Persistence:DatabasePath"] = Path.Combine(
-                        Path.GetTempPath(),
-                        "agentpulse-invalid-options",
-                        "agentpulse.db"),
-                })));
+        var tempRoot = Path.Combine(
+            Path.GetTempPath(),
+            "agentpulse-invalid-options",
+            Guid.NewGuid().ToString("N"));
 
-        Assert.Contains("half", exception.Message, StringComparison.OrdinalIgnoreCase);
+        try
+        {
+            var exception = Assert.Throws<InvalidOperationException>(() =>
+                AgentPulseHost.CreateBuilder(
+                    new TestConsole(),
+                    configuration => configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        [$"{SessionRunOptions.SectionName}:LeaseDuration"] = "00:00:30",
+                        [$"{StreamingRunOptions.SectionName}:LeaseRenewInterval"] = "00:00:20",
+                        ["AgentPulse:Persistence:DatabasePath"] =
+                            Path.Combine(tempRoot, "data", "agentpulse.db"),
+                        [$"{ProviderCredentialStoreOptions.SectionName}:CredentialRootPath"] =
+                            Path.Combine(tempRoot, "security"),
+                    })));
+
+            Assert.Contains("half", exception.Message, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot))
+            {
+                Directory.Delete(tempRoot, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -167,7 +184,8 @@ public sealed class HostCompositionTests
 
             Assert.Equal(ExitCodes.Success, exitCode);
             Assert.Equal(cancellationSource.Token, recordingHandler.ReceivedToken);
-            Assert.Equal("hello", recordingHandler.ReceivedPrompt);
+            Assert.NotNull(recordingHandler.ReceivedOptions);
+            Assert.Equal("hello", recordingHandler.ReceivedOptions.Prompt);
         }
         finally
         {
@@ -181,13 +199,15 @@ public sealed class HostCompositionTests
 
     private sealed class RecordingRunCommandHandler : IRunCommandHandler
     {
-        public string? ReceivedPrompt { get; private set; }
+        public RunCommandOptions? ReceivedOptions { get; private set; }
 
         public CancellationToken ReceivedToken { get; private set; }
 
-        public Task<int> HandleAsync(string prompt, CancellationToken cancellationToken)
+        public Task<int> HandleAsync(
+            RunCommandOptions options,
+            CancellationToken cancellationToken)
         {
-            ReceivedPrompt = prompt;
+            ReceivedOptions = options;
             ReceivedToken = cancellationToken;
             return Task.FromResult(ExitCodes.Success);
         }

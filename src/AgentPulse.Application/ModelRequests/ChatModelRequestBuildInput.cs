@@ -6,4 +6,5 @@ namespace AgentPulse.Application.ModelRequests;
 public sealed record ChatModelRequestBuildInput(
     ProjectContext ProjectContext,
     IReadOnlyCollection<Message> OrderedPreviousHistory,
-    Message CurrentUserMessage);
+    Message CurrentUserMessage,
+    string? Model = null);

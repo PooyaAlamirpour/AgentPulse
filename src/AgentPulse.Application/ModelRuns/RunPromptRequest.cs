@@ -5,4 +5,5 @@ namespace AgentPulse.Application.ModelRuns;
 public sealed record RunPromptRequest(
     string Prompt,
     string? ProjectPath = null,
-    SessionId? SessionId = null);
+    SessionId? SessionId = null,
+    string? ModelOverride = null);

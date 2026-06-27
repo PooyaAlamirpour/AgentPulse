@@ -76,7 +76,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
     {
         ArgumentNullException.ThrowIfNull(credentialSession);
 
-        var environmentCredential = Normalize(
+        var environmentCredential = ValidateOptional(
             _environmentVariables.Get(_options.ApiKeyEnvironmentVariable));
         if (environmentCredential is not null)
         {
@@ -86,7 +86,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
             return;
         }
 
-        var storedCredential = Normalize(
+        var storedCredential = ValidateOptional(
             await _credentialStore.GetAsync(_scope, cancellationToken));
         if (storedCredential is not null)
         {
@@ -96,7 +96,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
 
         if (_scope.IsOfficialXiaomi)
         {
-            var legacyCredential = Normalize(
+            var legacyCredential = ValidateOptional(
                 await _legacyCredentialStore.GetLegacyAsync(cancellationToken));
             if (legacyCredential is not null)
             {
@@ -121,20 +121,27 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
             cancellationToken);
         await _console.Error.FlushAsync(cancellationToken);
 
-        var promptedCredential = Normalize(
+        var promptedCredential = ValidateRequired(
             await _secretInputReader.ReadAsync(cancellationToken));
-        if (promptedCredential is null)
-        {
-            throw new CredentialResolutionException(
-                "The API credential cannot be empty.");
-        }
-
         credentialSession.Set(promptedCredential, ProviderCredentialSource.Prompt);
     }
 
-    private static string? Normalize(string? value)
+    private static string? ValidateOptional(string? value)
     {
-        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        return value is null ? null : ValidateRequired(value);
+    }
+
+    private static string ValidateRequired(string? value)
+    {
+        try
+        {
+            return ProviderCredentialValidator.ValidateAndNormalize(value);
+        }
+        catch (ProviderCredentialValidationException)
+        {
+            throw new CredentialResolutionException(
+                "The configured API credential contains invalid characters.");
+        }
     }
 
     private sealed class NullLegacyProviderCredentialStore : ILegacyProviderCredentialStore

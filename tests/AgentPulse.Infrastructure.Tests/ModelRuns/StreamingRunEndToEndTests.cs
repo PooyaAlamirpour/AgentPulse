@@ -107,9 +107,15 @@ public sealed class StreamingRunEndToEndTests
                 dbContextFactory,
                 clock,
                 new SessionRunOptions { LeaseDuration = TimeSpan.FromMinutes(5) }),
+            new EndSessionRun(
+                new SessionRepository(preparationContext),
+                new RunLeaseRepository(preparationContext),
+                new UnitOfWork(preparationContext),
+                clock),
             output,
             clock,
             new BlockingDelay(),
+            new ChatModelRunDefaults("mimo-v2.5-pro"),
             new StreamingRunOptions
             {
                 FlushInterval = TimeSpan.FromHours(1),
@@ -140,6 +146,8 @@ public sealed class StreamingRunEndToEndTests
             .SingleOrDefaultAsync(value => value.SessionId == result.SessionId);
 
         Assert.Equal(MessageStatus.Completed, assistant.Status);
+        Assert.Equal("mimo-v2.5-pro", assistant.Model);
+        Assert.Equal(ModelFinishReason.Stop.ToString(), assistant.FinishReason);
         Assert.Equal("Hello", Assert.IsType<TextMessagePart>(Assert.Single(assistant.Parts)).Text);
         Assert.Equal(SessionStatus.Idle, session.Status);
         Assert.Null(lease);
@@ -217,6 +225,7 @@ public sealed class StreamingRunEndToEndTests
             MessageId assistantMessageId,
             AgentPulse.Domain.SessionRuns.RunLeaseId leaseId,
             string completeText,
+            AssistantCompletionMetadata metadata,
             CancellationToken cancellationToken = default)
         {
             FinalizationCalls++;
@@ -225,6 +234,7 @@ public sealed class StreamingRunEndToEndTests
                 assistantMessageId,
                 leaseId,
                 completeText,
+                metadata,
                 cancellationToken);
         }
 
@@ -233,7 +243,7 @@ public sealed class StreamingRunEndToEndTests
             MessageId assistantMessageId,
             AgentPulse.Domain.SessionRuns.RunLeaseId leaseId,
             string completeText,
-            string failureReason,
+            AssistantFailureMetadata metadata,
             CancellationToken cancellationToken = default)
         {
             FinalizationCalls++;
@@ -242,7 +252,7 @@ public sealed class StreamingRunEndToEndTests
                 assistantMessageId,
                 leaseId,
                 completeText,
-                failureReason,
+                metadata,
                 cancellationToken);
         }
 
@@ -251,6 +261,7 @@ public sealed class StreamingRunEndToEndTests
             MessageId assistantMessageId,
             AgentPulse.Domain.SessionRuns.RunLeaseId leaseId,
             string completeText,
+            string model,
             CancellationToken cancellationToken = default)
         {
             FinalizationCalls++;
@@ -259,6 +270,7 @@ public sealed class StreamingRunEndToEndTests
                 assistantMessageId,
                 leaseId,
                 completeText,
+                model,
                 cancellationToken);
         }
     }

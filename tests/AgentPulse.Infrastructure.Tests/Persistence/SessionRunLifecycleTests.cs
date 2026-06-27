@@ -271,6 +271,46 @@ public sealed class SessionRunLifecycleTests
 
 
     [Fact]
+    public async Task Stale_scope_cannot_release_a_replacement_lease_owned_by_another_run()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var clock = new MutableClock(InitialUtc);
+        var projectContext = CreateProjectContext(ProjectId.New(), "/workspace/replacement");
+        await using var staleContext = database.CreateContext();
+        var prepared = await CreatePrepare(staleContext, clock).ExecuteAsync(
+            new PrepareSessionRunRequest(projectContext, null, "first owner"));
+        var replacementLeaseId = RunLeaseId.New();
+
+        await using (var replacementContext = database.CreateContext())
+        {
+            var repository = new RunLeaseRepository(replacementContext);
+            var previous = await repository.GetBySessionIdAsync(prepared.Session.Id);
+            Assert.NotNull(previous);
+            repository.Remove(previous);
+            await replacementContext.SaveChangesAsync();
+
+            await repository.AddAsync(new RunLease(
+                prepared.Session.Id,
+                replacementLeaseId,
+                clock.UtcNow,
+                clock.UtcNow.AddMinutes(5)));
+            await replacementContext.SaveChangesAsync();
+        }
+
+        var exception = await Assert.ThrowsAsync<SessionRunException>(() =>
+            CreateEnd(staleContext, clock).ExecuteAsync(
+                prepared.Session.Id,
+                prepared.RunLease.LeaseId));
+
+        Assert.Equal(SessionRunErrorCode.RunLeaseOwnershipMismatch, exception.Code);
+        await using var verificationContext = database.CreateContext();
+        var remainingLease = await verificationContext.RunLeases.SingleAsync();
+        Assert.Equal(replacementLeaseId, remainingLease.LeaseId);
+        Assert.Equal(SessionStatus.Running, (await verificationContext.Sessions.SingleAsync()).Status);
+    }
+
+
+    [Fact]
     public async Task Lease_can_only_be_renewed_by_its_owner()
     {
         await using var database = await SqliteTestDatabase.CreateAsync();

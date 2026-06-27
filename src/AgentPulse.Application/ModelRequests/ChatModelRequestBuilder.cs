@@ -71,7 +71,7 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         }
 
         requestMessages.Add(ConvertMessage(currentUserMessage, isCurrentUserMessage: true));
-        return new ChatModelRequest(requestMessages);
+        return new ChatModelRequest(requestMessages, input.Model);
     }
 
     private static void ValidateProjectContext(ProjectContext projectContext)

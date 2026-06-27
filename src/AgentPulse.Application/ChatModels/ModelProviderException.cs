@@ -26,7 +26,10 @@ public sealed class ModelProviderException : Exception
         string? providerErrorCode = null,
         string? providerErrorType = null,
         TimeSpan? retryAfter = null,
-        string? requestId = null)
+        string? requestId = null,
+        bool errorBodyReadTimedOut = false,
+        bool credentialCleanupFailed = false,
+        bool credentialCleanupTimedOut = false)
         : base(message, innerException)
     {
         if (!Enum.IsDefined(code))
@@ -49,6 +52,9 @@ public sealed class ModelProviderException : Exception
         ProviderErrorType = Normalize(providerErrorType);
         RetryAfter = retryAfter;
         RequestId = Normalize(requestId);
+        ErrorBodyReadTimedOut = errorBodyReadTimedOut;
+        CredentialCleanupFailed = credentialCleanupFailed;
+        CredentialCleanupTimedOut = credentialCleanupTimedOut;
     }
 
     public ModelProviderErrorCode Code { get; }
@@ -65,6 +71,12 @@ public sealed class ModelProviderException : Exception
 
     public string? RequestId { get; }
 
+    public bool ErrorBodyReadTimedOut { get; }
+
+    public bool CredentialCleanupFailed { get; }
+
+    public bool CredentialCleanupTimedOut { get; }
+
     public ModelProviderException WithFailureStage(ModelFailureStage failureStage)
     {
         return FailureStage == failureStage
@@ -78,7 +90,10 @@ public sealed class ModelProviderException : Exception
                 ProviderErrorCode,
                 ProviderErrorType,
                 RetryAfter,
-                RequestId);
+                RequestId,
+                ErrorBodyReadTimedOut,
+                CredentialCleanupFailed,
+                CredentialCleanupTimedOut);
     }
 
     private static string? Normalize(string? value)

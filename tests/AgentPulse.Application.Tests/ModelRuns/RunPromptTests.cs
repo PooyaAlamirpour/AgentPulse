@@ -169,6 +169,30 @@ public sealed class RunPromptTests
     }
 
     [Fact]
+    public async Task Cancellation_while_completion_is_persisting_marks_assistant_cancelled()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var fixture = new Fixture();
+        fixture.Persistence.WaitForCompleteCancellation = true;
+        fixture.Model.Events =
+        [
+            new ModelStreamEvent.TextDelta("Hello"),
+            new ModelStreamEvent.Completed(ModelFinishReason.Stop),
+        ];
+
+        var runTask = fixture.RunAsync(cancellation.Token);
+        await fixture.Persistence.CompleteStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => runTask);
+        Assert.Equal("Hello", fixture.Persistence.CancelledText);
+        Assert.Equal(1, fixture.Persistence.CompleteCalls);
+        Assert.Equal(1, fixture.Persistence.CancelCalls);
+        Assert.Equal(0, fixture.Persistence.FailCalls);
+        Assert.Equal(1, fixture.EndSessionRun.Calls);
+    }
+
+    [Fact]
     public async Task Intermediate_flush_failure_attempts_safe_final_failure_with_partial_text()
     {
         var fixture = new Fixture(new StreamingRunOptions
@@ -186,9 +210,10 @@ public sealed class RunPromptTests
 
         var exception = await Assert.ThrowsAsync<ModelRunException>(() => fixture.RunAsync());
 
-        Assert.Equal(ModelRunErrorCode.ProviderFailure, exception.Code);
+        Assert.Equal(ModelRunErrorCode.PersistenceFailure, exception.Code);
         Assert.Equal("Hel", fixture.Persistence.FailedText);
         Assert.Equal(1, fixture.Persistence.FailCalls);
+        Assert.Equal(1, fixture.EndSessionRun.Calls);
     }
 
     [Fact]
@@ -232,16 +257,21 @@ public sealed class RunPromptTests
     public async Task Lost_lease_cancels_provider_and_fails_with_partial_text()
     {
         var delay = new TriggerOnceDelay();
+        var providerCancellation = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var fixture = new Fixture(delay: delay);
         fixture.Renewal.Exception = new InvalidOperationException("lease owner changed");
-        fixture.Model.StreamFactory = token => PartialThenWaitForCancellation(delay, token);
+        fixture.Model.StreamFactory = token => PartialThenWaitForCancellation(
+            delay,
+            providerCancellation,
+            token);
 
         var exception = await Assert.ThrowsAsync<ModelRunException>(() => fixture.RunAsync());
 
         Assert.Equal(ModelRunErrorCode.LeaseLost, exception.Code);
         Assert.Equal("Hel", fixture.Persistence.FailedText);
         Assert.Equal(1, fixture.Renewal.Calls);
-        Assert.True(delay.CancellationObserved);
+        Assert.True(providerCancellation.Task.IsCompletedSuccessfully);
     }
 
     [Fact]
@@ -312,11 +342,21 @@ public sealed class RunPromptTests
 
     private static async IAsyncEnumerable<ModelStreamEvent> PartialThenWaitForCancellation(
         TriggerOnceDelay delay,
+        TaskCompletionSource cancellationObserved,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         yield return new ModelStreamEvent.TextDelta("Hel");
         delay.ReleaseHeartbeat();
-        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+
+        try
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            cancellationObserved.TrySetResult();
+            throw;
+        }
     }
 
     private sealed class Fixture
@@ -340,6 +380,7 @@ public sealed class RunPromptTests
             Persistence = new RecordingPersistence();
             Output = new RecordingOutputSink();
             Renewal = new RecordingRenewalService();
+            EndSessionRun = new RecordingEndSessionRun();
             Delay = delay ?? new BlockingDelay();
             Options = options ?? new StreamingRunOptions
             {
@@ -357,6 +398,7 @@ public sealed class RunPromptTests
         public RecordingPersistence Persistence { get; }
         public RecordingOutputSink Output { get; }
         public RecordingRenewalService Renewal { get; }
+        public RecordingEndSessionRun EndSessionRun { get; }
         public IAsyncDelay Delay { get; }
         public StreamingRunOptions Options { get; }
 
@@ -369,9 +411,11 @@ public sealed class RunPromptTests
                 Model,
                 Persistence,
                 Renewal,
+                EndSessionRun,
                 Output,
                 Clock,
                 Delay,
+                new ChatModelRunDefaults("default-model"),
                 Options);
 
             return service.ExecuteAsync(
@@ -406,7 +450,7 @@ public sealed class RunPromptTests
                 2,
                 UtcNow);
             assistant.AddTextPart(MessagePartId.New(), 1, string.Empty, UtcNow);
-            assistant.StartStreaming(UtcNow);
+            assistant.StartStreaming("default-model", UtcNow);
 
             var lease = new RunLease(
                 session.Id,
@@ -465,6 +509,7 @@ public sealed class RunPromptTests
             CancellationToken cancellationToken)
         {
             prepare.WasCalledBeforeModel = prepare.Called;
+            Assert.Equal("default-model", request.Model);
             Assert.Equal(1, request.Messages.Count(message =>
                 message.Role == ChatModelRole.User &&
                 message.Content == "Explain this project"));
@@ -496,6 +541,8 @@ public sealed class RunPromptTests
         public List<string> IntermediateTexts { get; } = [];
         public TaskCompletionSource IntermediateFlushObserved { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource CompleteStarted { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public string? CompletedText { get; private set; }
         public string? FailedText { get; private set; }
         public string? CancelledText { get; private set; }
@@ -506,6 +553,7 @@ public sealed class RunPromptTests
         public bool ThrowOnIntermediateFlush { get; set; }
         public bool ThrowOnComplete { get; set; }
         public bool ThrowOnFail { get; set; }
+        public bool WaitForCompleteCancellation { get; set; }
 
         public Task FlushAssistantTextAsync(
             MessageId assistantMessageId,
@@ -523,22 +571,29 @@ public sealed class RunPromptTests
             return Task.CompletedTask;
         }
 
-        public Task CompleteAsync(
+        public async Task CompleteAsync(
             SessionId sessionId,
             MessageId assistantMessageId,
             RunLeaseId leaseId,
             string completeText,
+            AssistantCompletionMetadata metadata,
             CancellationToken cancellationToken = default)
         {
+            Assert.Equal("default-model", metadata.Model);
             CompleteCalls++;
             LastAttemptedFinalText = completeText;
+            CompleteStarted.TrySetResult();
+            if (WaitForCompleteCancellation)
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+
             if (ThrowOnComplete)
             {
                 throw new InvalidOperationException("final flush failed");
             }
 
             CompletedText = completeText;
-            return Task.CompletedTask;
         }
 
         public Task FailAsync(
@@ -546,9 +601,10 @@ public sealed class RunPromptTests
             MessageId assistantMessageId,
             RunLeaseId leaseId,
             string completeText,
-            string failureReason,
+            AssistantFailureMetadata metadata,
             CancellationToken cancellationToken = default)
         {
+            Assert.Equal("default-model", metadata.Model);
             FailCalls++;
             LastAttemptedFinalText = completeText;
             if (ThrowOnFail)
@@ -565,11 +621,28 @@ public sealed class RunPromptTests
             MessageId assistantMessageId,
             RunLeaseId leaseId,
             string completeText,
+            string model,
             CancellationToken cancellationToken = default)
         {
+            Assert.Equal("default-model", model);
             CancelCalls++;
             LastAttemptedFinalText = completeText;
             CancelledText = completeText;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class RecordingEndSessionRun : IEndSessionRun
+    {
+        public int Calls { get; private set; }
+
+        public Task ExecuteAsync(
+            SessionId sessionId,
+            RunLeaseId leaseId,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
             return Task.CompletedTask;
         }
     }

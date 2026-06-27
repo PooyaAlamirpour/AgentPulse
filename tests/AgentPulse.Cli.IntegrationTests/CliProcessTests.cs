@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Text.Json;
+using Microsoft.Data.Sqlite;
 
 namespace AgentPulse.Cli.IntegrationTests;
 
@@ -11,7 +13,7 @@ public sealed class CliProcessTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Usage:", result.StandardOutput, StringComparison.Ordinal);
-        Assert.Contains("agentpulse run [message...]", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("agentpulse run [--dir <path>] [--model <model>] [--session <id>] [prompt]", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains(
             "Stream a response from the configured model endpoint.",
             result.StandardOutput,
@@ -67,7 +69,7 @@ public sealed class CliProcessTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("Hello" + Environment.NewLine, result.StandardOutput);
-        Assert.Equal(string.Empty, result.StandardError);
+        Assert.NotEqual(Guid.Empty, ParseSessionId(result.StandardError));
     }
 
     [Fact]
@@ -81,7 +83,7 @@ public sealed class CliProcessTests
 
         Assert.Equal(0, result.ExitCode);
         Assert.Equal("Hello" + Environment.NewLine, result.StandardOutput);
-        Assert.Equal(string.Empty, result.StandardError);
+        Assert.NotEqual(Guid.Empty, ParseSessionId(result.StandardError));
     }
 
     [Fact]
@@ -92,9 +94,109 @@ public sealed class CliProcessTests
         Assert.NotEqual(0, result.ExitCode);
         Assert.Equal(string.Empty, result.StandardOutput);
         Assert.Contains(
-            "You must provide a message or a command",
+            "A prompt is required as an argument or redirected standard input.",
             result.StandardError,
             StringComparison.Ordinal);
+        Assert.DoesNotContain("Session ID:", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_options_are_wired_end_to_end_with_git_root_history_and_stderr_metadata()
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "AgentPulse Cli Tests",
+            Guid.NewGuid().ToString("N"));
+        var repositoryPath = Directory.CreateDirectory(
+            Path.Combine(root, "repository with space")).FullName;
+        var subdirectory = Directory.CreateDirectory(
+            Path.Combine(repositoryPath, "src", "service")).FullName;
+        var environmentRoot = Directory.CreateDirectory(Path.Combine(root, "environment")).FullName;
+        var databasePath = Path.Combine(environmentRoot, "agentpulse.db");
+
+        try
+        {
+            await InitializeGitRepositoryAsync(repositoryPath);
+            await using var server = CliLocalModelServer.StartSuccessful(expectedRequestCount: 2);
+            var environment = CreateRunEnvironment(server.BaseUrl, environmentRoot);
+
+            var first = await RunCliAsync(
+                [
+                    "run",
+                    "--dir",
+                    subdirectory + Path.DirectorySeparatorChar,
+                    "--model",
+                    "custom-model",
+                    "first positional",
+                ],
+                standardInput: "ignored redirected input",
+                environment: environment);
+
+            Assert.Equal(0, first.ExitCode);
+            Assert.Equal("Hello" + Environment.NewLine, first.StandardOutput);
+            var sessionId = ParseSessionId(first.StandardError);
+
+            const string multilinePrompt = "second line one\nsecond line two ✓";
+            var second = await RunCliAsync(
+                [
+                    "run",
+                    "--dir",
+                    repositoryPath,
+                    "--session",
+                    sessionId.ToString("D"),
+                ],
+                standardInput: multilinePrompt + Environment.NewLine,
+                environment: environment);
+
+            Assert.Equal(0, second.ExitCode);
+            Assert.Equal("Hello" + Environment.NewLine, second.StandardOutput);
+            Assert.Equal(sessionId, ParseSessionId(second.StandardError));
+
+            Assert.Equal(2, server.RequestBodies.Count);
+            using var firstRequest = JsonDocument.Parse(server.RequestBodies[0]);
+            using var secondRequest = JsonDocument.Parse(server.RequestBodies[1]);
+            Assert.Equal(
+                "custom-model",
+                firstRequest.RootElement.GetProperty("model").GetString());
+            Assert.Equal(
+                "mimo-v2.5-pro",
+                secondRequest.RootElement.GetProperty("model").GetString());
+            Assert.Equal(
+                "first positional",
+                GetLastUserContent(firstRequest.RootElement));
+            Assert.Equal(multilinePrompt, GetLastUserContent(secondRequest.RootElement));
+            Assert.Equal(
+                ["system", "user", "assistant", "user"],
+                secondRequest.RootElement
+                    .GetProperty("messages")
+                    .EnumerateArray()
+                    .Select(message => message.GetProperty("role").GetString()));
+
+            await using var connection = new SqliteConnection($"Data Source={databasePath}");
+            await connection.OpenAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText =
+                "SELECT NormalizedRootPath, IsGitRepository, GitWorktree, " +
+                "(SELECT COUNT(*) FROM Projects), (SELECT COUNT(*) FROM Sessions) " +
+                "FROM Projects;";
+            await using var reader = await command.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync());
+            var canonicalRoot = Path.TrimEndingDirectorySeparator(
+                Path.GetFullPath(repositoryPath));
+            Assert.Equal(canonicalRoot, reader.GetString(0));
+            Assert.True(reader.GetBoolean(1));
+            Assert.Equal(canonicalRoot, reader.GetString(2));
+            Assert.Equal(1, reader.GetInt32(3));
+            Assert.Equal(1, reader.GetInt32(4));
+            Assert.False(await reader.ReadAsync());
+        }
+        finally
+        {
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -137,9 +239,11 @@ public sealed class CliProcessTests
             StringComparison.Ordinal);
     }
 
-    private static Dictionary<string, string?> CreateRunEnvironment(string baseUrl)
+    private static Dictionary<string, string?> CreateRunEnvironment(
+        string baseUrl,
+        string? root = null)
     {
-        var root = Path.Combine(
+        root ??= Path.Combine(
             Path.GetTempPath(),
             "AgentPulse.CliTests",
             Guid.NewGuid().ToString("N"));
@@ -151,6 +255,46 @@ public sealed class CliProcessTests
             ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
             ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "security"),
         };
+    }
+
+    private static Guid ParseSessionId(string standardError)
+    {
+        var line = standardError
+            .Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries)
+            .Single(value => value.StartsWith("Session ID: ", StringComparison.Ordinal));
+        return Guid.Parse(line["Session ID: ".Length..]);
+    }
+
+    private static string GetLastUserContent(JsonElement request)
+    {
+        return request
+            .GetProperty("messages")
+            .EnumerateArray()
+            .Last(message => string.Equals(
+                message.GetProperty("role").GetString(),
+                "user",
+                StringComparison.Ordinal))
+            .GetProperty("content")
+            .GetString()!;
+    }
+
+    private static async Task InitializeGitRepositoryAsync(string repositoryPath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            WorkingDirectory = repositoryPath,
+            UseShellExecute = false,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("init");
+
+        using var process = new Process { StartInfo = startInfo };
+        Assert.True(process.Start(), "The test Git process could not be started.");
+        await process.WaitForExitAsync(CancellationToken.None);
+        var error = await process.StandardError.ReadToEndAsync();
+        Assert.True(process.ExitCode == 0, $"Git initialization failed: {error}");
     }
 
     private static async Task<ProcessResult> RunCliAsync(

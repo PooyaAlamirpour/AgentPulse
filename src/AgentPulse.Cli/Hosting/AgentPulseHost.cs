@@ -1,3 +1,4 @@
+using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.Processes;
@@ -109,6 +110,7 @@ public static class AgentPulseHost
         builder.Services.AddSingleton(sessionRunOptions);
         builder.Services.AddSingleton(streamingRunOptions);
         builder.Services.AddSingleton(modelOptions);
+        builder.Services.AddSingleton(new ChatModelRunDefaults(modelOptions.Model));
         builder.Services.AddSingleton(credentialScope);
         builder.Services.AddSingleton(persistenceOptions);
         builder.Services.AddSingleton<IApplicationDataPathProvider>(applicationDataPathProvider);
@@ -148,6 +150,7 @@ public static class AgentPulseHost
 
         builder.Services.AddSingleton<IConsole>(console ?? new SystemConsole());
         builder.Services.AddSingleton<IModelOutputSink, ConsoleModelOutputSink>();
+        builder.Services.AddSingleton<IRunCommandParser, RunCommandParser>();
         builder.Services.AddSingleton<IPromptInputReader, PromptInputReader>();
         builder.Services.AddSingleton<IEnvironmentVariableReader, SystemEnvironmentVariableReader>();
         builder.Services.AddSingleton<IConsoleKeyReader, SystemConsoleKeyReader>();

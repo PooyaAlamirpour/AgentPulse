@@ -87,6 +87,32 @@ public sealed class ProjectContextFactoryTests
     }
 
     [Fact]
+    public async Task Run_context_uses_the_same_git_aware_canonical_policy()
+    {
+        var fileSystem = new FakeProjectFileSystem("/workspace/repository/src/service")
+            .AddDirectory("/workspace/repository")
+            .AddDirectory("/workspace/repository/src/service");
+        var git = new FakeGitService
+        {
+            Repository = new GitRepositoryInfo(
+                "/workspace/repository",
+                "/workspace/repository/.git",
+                "/workspace/repository/.git",
+                false),
+        };
+        var factory = CreateFactory(fileSystem, git);
+
+        var context = await factory.CreateForRunAsync(".");
+
+        Assert.Equal("/workspace/repository/src/service", context.CurrentDirectory);
+        Assert.Equal("/workspace/repository", context.ProjectRoot);
+        Assert.True(context.IsGitRepository);
+        Assert.Equal("/workspace/repository", context.GitWorktree);
+        Assert.Equal(1, git.AvailabilityCallCount);
+        Assert.Equal(1, git.DiscoverCallCount);
+    }
+
+    [Fact]
     public async Task Non_git_directory_builds_valid_context()
     {
         var fileSystem = new FakeProjectFileSystem("/workspace/project")
@@ -340,10 +366,14 @@ public sealed class ProjectContextFactoryTests
 
         public bool WaitForCancellation { get; init; }
 
+        public int AvailabilityCallCount { get; private set; }
+
         public int DiscoverCallCount { get; private set; }
 
         public async Task<bool> IsAvailableAsync(CancellationToken cancellationToken = default)
         {
+            AvailabilityCallCount++;
+
             if (WaitForCancellation)
             {
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);

@@ -5,6 +5,10 @@ namespace AgentPulse.Domain.Messages;
 
 public sealed class Message
 {
+    private const int MaximumModelLength = 256;
+    private const int MaximumFinishReasonLength = 64;
+    private const int MaximumFailureReasonLength = 1024;
+    private const int MaximumFailureMetadataLength = 64;
     private readonly List<MessagePart> _parts = [];
 
     private Message()
@@ -66,6 +70,22 @@ public sealed class Message
 
     public string? FailureReason { get; private set; }
 
+    public string? Model { get; private set; }
+
+    public string? FinishReason { get; private set; }
+
+    public long? InputTokens { get; private set; }
+
+    public long? OutputTokens { get; private set; }
+
+    public long? TotalTokens { get; private set; }
+
+    public string? FailureKind { get; private set; }
+
+    public string? FailureStage { get; private set; }
+
+    public int? FailureStatusCode { get; private set; }
+
     public IReadOnlyCollection<MessagePart> Parts => _parts.AsReadOnly();
 
     public TextMessagePart AddTextPart(
@@ -96,14 +116,58 @@ public sealed class Message
         TransitionTo(MessageStatus.Streaming, updatedAtUtc, MessageStatus.Pending);
     }
 
+    public void StartStreaming(string model, DateTime updatedAtUtc)
+    {
+        EnsureAssistant();
+        Model = NormalizeRequired(model, MaximumModelLength, nameof(model));
+        StartStreaming(updatedAtUtc);
+    }
+
     public void Complete(DateTime updatedAtUtc)
     {
+        Complete(
+            finishReason: null,
+            inputTokens: null,
+            outputTokens: null,
+            totalTokens: null,
+            updatedAtUtc: updatedAtUtc);
+    }
+
+    public void Complete(
+        string? finishReason,
+        long? inputTokens,
+        long? outputTokens,
+        long? totalTokens,
+        DateTime updatedAtUtc)
+    {
+        if (finishReason is not null ||
+            inputTokens is not null ||
+            outputTokens is not null ||
+            totalTokens is not null)
+        {
+            EnsureAssistant();
+        }
+
+        var normalizedFinishReason = NormalizeOptional(
+            finishReason,
+            MaximumFinishReasonLength,
+            nameof(finishReason));
+        ValidateUsage(inputTokens, outputTokens, totalTokens);
+
         TransitionTo(
             MessageStatus.Completed,
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
+
+        FinishReason = normalizedFinishReason;
+        InputTokens = inputTokens;
+        OutputTokens = outputTokens;
+        TotalTokens = totalTokens;
         FailureReason = null;
+        FailureKind = null;
+        FailureStage = null;
+        FailureStatusCode = null;
     }
 
     public void Fail(DateTime updatedAtUtc)
@@ -113,34 +177,162 @@ public sealed class Message
 
     public void Fail(string? reason, DateTime updatedAtUtc)
     {
-        var validatedReason = NormalizeFailureReason(reason);
+        Fail(
+            reason,
+            failureKind: null,
+            failureStage: null,
+            failureStatusCode: null,
+            updatedAtUtc);
+    }
+
+    public void Fail(
+        string? reason,
+        string? failureKind,
+        string? failureStage,
+        int? failureStatusCode,
+        DateTime updatedAtUtc)
+    {
+        if (failureKind is not null || failureStage is not null || failureStatusCode is not null)
+        {
+            EnsureAssistant();
+        }
+
+        var normalizedReason = NormalizeOptional(
+            reason,
+            MaximumFailureReasonLength,
+            nameof(reason));
+        var normalizedKind = NormalizeOptional(
+            failureKind,
+            MaximumFailureMetadataLength,
+            nameof(failureKind));
+        var normalizedStage = NormalizeOptional(
+            failureStage,
+            MaximumFailureMetadataLength,
+            nameof(failureStage));
+
+        if (failureStatusCode is < 100 or > 599)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(failureStatusCode),
+                failureStatusCode,
+                "Failure status code must be a valid HTTP status code.");
+        }
+
         TransitionTo(
             MessageStatus.Failed,
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
-        FailureReason = validatedReason;
+
+        FailureReason = normalizedReason;
+        FailureKind = normalizedKind;
+        FailureStage = normalizedStage;
+        FailureStatusCode = failureStatusCode;
+        FinishReason = null;
+        InputTokens = null;
+        OutputTokens = null;
+        TotalTokens = null;
     }
 
     public void Cancel(DateTime updatedAtUtc)
     {
+        Cancel(finishReason: null, updatedAtUtc: updatedAtUtc);
+    }
+
+    public void Cancel(string? finishReason, DateTime updatedAtUtc)
+    {
+        if (finishReason is not null)
+        {
+            EnsureAssistant();
+        }
+
+        var normalizedFinishReason = NormalizeOptional(
+            finishReason,
+            MaximumFinishReasonLength,
+            nameof(finishReason));
+
         TransitionTo(
             MessageStatus.Cancelled,
             updatedAtUtc,
             MessageStatus.Pending,
             MessageStatus.Streaming);
+
+        FinishReason = normalizedFinishReason;
         FailureReason = null;
+        FailureKind = null;
+        FailureStage = null;
+        FailureStatusCode = null;
+        InputTokens = null;
+        OutputTokens = null;
+        TotalTokens = null;
     }
 
-    private static string? NormalizeFailureReason(string? reason)
+    private void EnsureAssistant()
     {
-        if (reason is null)
+        if (Role != MessageRole.Assistant)
+        {
+            throw new InvalidOperationException(
+                "Only assistant messages can record model-run metadata.");
+        }
+    }
+
+    private static void ValidateUsage(
+        long? inputTokens,
+        long? outputTokens,
+        long? totalTokens)
+    {
+        if (inputTokens is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(inputTokens));
+        }
+
+        if (outputTokens is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(outputTokens));
+        }
+
+        if (totalTokens is < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(totalTokens));
+        }
+
+        var suppliedCount = new[] { inputTokens, outputTokens, totalTokens }
+            .Count(static value => value.HasValue);
+        if (suppliedCount is not 0 and not 3)
+        {
+            throw new ArgumentException(
+                "Usage token values must either all be present or all be absent.");
+        }
+    }
+
+    private static string NormalizeRequired(
+        string value,
+        int maximumLength,
+        string parameterName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(value, parameterName);
+        var normalized = value.Trim();
+        if (normalized.Length > maximumLength)
+        {
+            throw new ArgumentException(
+                $"The value cannot exceed {maximumLength} characters.",
+                parameterName);
+        }
+
+        return normalized;
+    }
+
+    private static string? NormalizeOptional(
+        string? value,
+        int maximumLength,
+        string parameterName)
+    {
+        if (value is null)
         {
             return null;
         }
 
-        ArgumentException.ThrowIfNullOrWhiteSpace(reason);
-        return reason.Trim();
+        return NormalizeRequired(value, maximumLength, parameterName);
     }
 
     private void TransitionTo(

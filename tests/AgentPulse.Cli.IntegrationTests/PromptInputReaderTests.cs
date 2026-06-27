@@ -5,101 +5,69 @@ namespace AgentPulse.Cli.IntegrationTests;
 public sealed class PromptInputReaderTests
 {
     [Fact]
-    public async Task Arguments_are_joined_using_node_compatible_quoting()
+    public async Task Positional_prompt_wins_and_redirected_stdin_is_not_read()
     {
-        var console = new TestConsole();
+        var console = new TestConsole(
+            new ThrowingTextReader(),
+            isInputRedirected: true);
         var reader = new PromptInputReader(console);
 
-        var prompt = await reader.ReadAsync(
-            ["hello world", "say \"hi\"", "--", "tail"],
-            CancellationToken.None);
+        var prompt = await reader.ReadAsync("hello world", CancellationToken.None);
 
-        Assert.Equal("\"hello world\" \"say \\\"hi\\\"\" tail", prompt);
+        Assert.Equal("hello world", prompt);
     }
 
     [Fact]
-    public async Task Redirected_stdin_is_appended_after_a_line_feed()
+    public async Task Redirected_stdin_preserves_multiline_unicode_and_trims_only_final_line_endings()
     {
-        var console = new TestConsole("from stdin", isInputRedirected: true);
+        var console = new TestConsole(
+            "  خط اول\r\nsecond  line\n\n",
+            isInputRedirected: true);
         var reader = new PromptInputReader(console);
 
-        var prompt = await reader.ReadAsync(
-            ["from-argument"],
-            CancellationToken.None);
+        var prompt = await reader.ReadAsync(null, CancellationToken.None);
 
-        Assert.Equal("from-argument\nfrom stdin", prompt);
+        Assert.Equal("  خط اول\r\nsecond  line", prompt);
     }
 
     [Fact]
-    public async Task Redirected_stdin_read_honors_controlled_cancellation()
+    public async Task Missing_positional_prompt_and_non_redirected_stdin_returns_null()
     {
-        using var input = new BlockingTextReader();
-        var console = new TestConsole(input, isInputRedirected: true);
-        var reader = new PromptInputReader(console);
+        var reader = new PromptInputReader(new TestConsole());
+
+        var prompt = await reader.ReadAsync(null, CancellationToken.None);
+
+        Assert.Null(prompt);
+    }
+
+    [Fact]
+    public async Task Redirected_whitespace_is_returned_for_cli_validation()
+    {
+        var reader = new PromptInputReader(
+            new TestConsole("   \r\n", isInputRedirected: true));
+
+        var prompt = await reader.ReadAsync(null, CancellationToken.None);
+
+        Assert.Equal("   ", prompt);
+    }
+
+    [Fact]
+    public async Task Redirected_stdin_honors_cancellation()
+    {
+        var reader = new PromptInputReader(
+            new TestConsole("hello", isInputRedirected: true));
         using var cancellationSource = new CancellationTokenSource();
-
-        var readTask = reader.ReadAsync([], cancellationSource.Token);
-        await input.WaitUntilReadStartsAsync();
         cancellationSource.Cancel();
 
-        try
-        {
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => readTask);
-        }
-        finally
-        {
-            input.Release();
-            await input.WaitUntilReadCompletesAsync();
-        }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            reader.ReadAsync(null, cancellationSource.Token));
     }
 
-    private sealed class BlockingTextReader : TextReader
+    private sealed class ThrowingTextReader : TextReader
     {
-        private readonly TaskCompletionSource readStarted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        private readonly ManualResetEventSlim release = new(initialState: false);
-        private readonly TaskCompletionSource readCompleted = new(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-
-        public Task WaitUntilReadStartsAsync()
+        public override Task<string> ReadToEndAsync(CancellationToken cancellationToken = default)
         {
-            return readStarted.Task;
-        }
-
-        public Task WaitUntilReadCompletesAsync()
-        {
-            return readCompleted.Task;
-        }
-
-        public void Release()
-        {
-            release.Set();
-        }
-
-        public override string ReadToEnd()
-        {
-            readStarted.TrySetResult();
-
-            try
-            {
-                release.Wait();
-                return string.Empty;
-            }
-            finally
-            {
-                readCompleted.TrySetResult();
-            }
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-            {
-                release.Set();
-                release.Dispose();
-            }
-
-            base.Dispose(disposing);
+            throw new InvalidOperationException("stdin must not be read");
         }
     }
 }

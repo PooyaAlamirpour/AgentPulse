@@ -96,7 +96,14 @@ public sealed class PrepareSessionRun(
             maximumSequence + 2,
             utcNow);
         assistantMessage.AddTextPart(MessagePartId.New(), 1, string.Empty, utcNow);
-        assistantMessage.StartStreaming(utcNow);
+        if (request.Model is null)
+        {
+            assistantMessage.StartStreaming(utcNow);
+        }
+        else
+        {
+            assistantMessage.StartStreaming(request.Model, utcNow);
+        }
 
         await messageRepository.AddAsync(userMessage, cancellationToken);
         await messageRepository.AddAsync(assistantMessage, cancellationToken);

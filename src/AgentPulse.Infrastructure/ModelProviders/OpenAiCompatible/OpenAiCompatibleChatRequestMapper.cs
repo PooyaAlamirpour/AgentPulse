@@ -23,7 +23,7 @@ internal static class OpenAiCompatibleChatRequestMapper
             : null;
 
         return new OpenAiCompatibleChatRequestDto(
-            options.Model.Trim(),
+            request.Model ?? options.Model.Trim(),
             messages,
             Stream: true,
             new OpenAiCompatibleStreamOptionsDto(IncludeUsage: true),

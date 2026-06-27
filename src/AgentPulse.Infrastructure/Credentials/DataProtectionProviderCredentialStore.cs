@@ -149,15 +149,18 @@ public sealed class DataProtectionProviderCredentialStore :
         {
             var protectedBytes = await File.ReadAllBytesAsync(path, cancellationToken);
             var plaintextBytes = protector.Unprotect(protectedBytes);
-            var credential = Encoding.UTF8.GetString(plaintextBytes).Trim();
+            var credential = Encoding.UTF8.GetString(plaintextBytes);
 
-            if (string.IsNullOrWhiteSpace(credential))
+            try
+            {
+                return ProviderCredentialValidator.ValidateAndNormalize(credential);
+            }
+            catch (ProviderCredentialValidationException exception)
             {
                 throw new ProviderCredentialStoreException(
-                    $"{safeDescription} is empty or corrupt.");
+                    $"{safeDescription} is empty or corrupt.",
+                    exception);
             }
-
-            return credential;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -186,8 +189,7 @@ public sealed class DataProtectionProviderCredentialStore :
         string safeDescription,
         CancellationToken cancellationToken)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(credential);
-        var normalizedCredential = credential.Trim();
+        var normalizedCredential = ProviderCredentialValidator.ValidateAndNormalize(credential);
 
         EnsureSecureDirectory(_rootPath);
         EnsureSecureDirectory(_keyRingPath);

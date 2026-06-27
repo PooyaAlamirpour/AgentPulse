@@ -6,11 +6,13 @@ public sealed class StreamingRunOptions
 
     public static readonly TimeSpan MinimumLeaseRenewInterval = TimeSpan.FromSeconds(1);
 
-    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromSeconds(1);
+    public TimeSpan FlushInterval { get; set; } = TimeSpan.FromMilliseconds(500);
 
     public int FlushCharacterThreshold { get; set; } = 256;
 
     public TimeSpan LeaseRenewInterval { get; set; } = TimeSpan.FromMinutes(1);
+
+    public TimeSpan CleanupTimeout { get; set; } = TimeSpan.FromSeconds(5);
 
     public void Validate()
     {
@@ -34,6 +36,11 @@ public sealed class StreamingRunOptions
         {
             throw new InvalidOperationException(
                 $"Run lease renew interval must be at least {MinimumLeaseRenewInterval.TotalSeconds:0} second.");
+        }
+
+        if (CleanupTimeout <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("Run cleanup timeout must be positive.");
         }
     }
 }

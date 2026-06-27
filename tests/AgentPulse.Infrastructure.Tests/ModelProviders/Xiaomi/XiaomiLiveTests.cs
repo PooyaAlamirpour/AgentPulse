@@ -10,7 +10,8 @@ public sealed class XiaomiLiveTests
     [Trait("Category", "LiveXiaomi")]
     public async Task Real_api_returns_text_and_completion()
     {
-        var credential = Environment.GetEnvironmentVariable("MIMO_API_KEY")!.Trim();
+        var credential = ProviderCredentialValidator.ValidateAndNormalize(
+            Environment.GetEnvironmentVariable("MIMO_API_KEY"));
         var session = new EnvironmentCredentialSession(credential);
         using var handler = new HttpClientHandler
         {
@@ -63,6 +64,9 @@ public sealed class XiaomiLiveTests
     [InlineData("secret", "yes", false)]
     [InlineData("secret", "0", false)]
     [InlineData("   ", "1", false)]
+    [InlineData("\rsecret", "1", false)]
+    [InlineData("secret\n", "1", false)]
+    [InlineData("secret\tkey", "1", false)]
     public void Live_test_gate_requires_api_key_and_exact_opt_in_flag(
         string? apiKey,
         string? flag,
@@ -89,8 +93,20 @@ public sealed class XiaomiLiveTests
     {
         public static bool IsEnabled(string? apiKey, string? optInFlag)
         {
-            return !string.IsNullOrWhiteSpace(apiKey) &&
-                   string.Equals(optInFlag, "1", StringComparison.Ordinal);
+            if (!string.Equals(optInFlag, "1", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            try
+            {
+                ProviderCredentialValidator.ValidateAndNormalize(apiKey);
+                return true;
+            }
+            catch (ProviderCredentialValidationException)
+            {
+                return false;
+            }
         }
     }
 

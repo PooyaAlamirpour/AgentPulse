@@ -6,4 +6,5 @@ namespace AgentPulse.Application.SessionRuns;
 public sealed record PrepareSessionRunRequest(
     ProjectContext ProjectContext,
     SessionId? SessionId,
-    string UserPrompt);
+    string UserPrompt,
+    string? Model = null);

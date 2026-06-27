@@ -6,12 +6,14 @@ namespace AgentPulse.Cli.Commands;
 
 public sealed class CliApplication(
     IConsole console,
+    IRunCommandParser runCommandParser,
     IPromptInputReader promptInputReader,
     IRunCommandHandler runCommandHandler,
     IAuthCommandHandler authCommandHandler,
     IOptions<CliOptions> options)
 {
-    private const string EmptyPromptError = "You must provide a message or a command";
+    private const string EmptyPromptError =
+        "A prompt is required as an argument or redirected standard input.";
 
     public async Task<int> RunAsync(
         IReadOnlyList<string> arguments,
@@ -32,30 +34,46 @@ public sealed class CliApplication(
 
         if (!string.Equals(arguments[0], "run", StringComparison.Ordinal))
         {
-            await console.Error.WriteLineAsync(
-                $"Unknown command: {arguments[0]}".AsMemory(),
+            await WriteErrorAsync(
+                $"Unknown command: {arguments[0]}",
                 cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
 
         if (arguments.Count == 2 && IsHelp(arguments[1]))
         {
-            await WriteHelpAsync(cancellationToken);
+            await WriteRunHelpAsync(cancellationToken);
             return ExitCodes.Success;
         }
 
-        var promptArguments = arguments.Skip(1).ToArray();
-        var prompt = await promptInputReader.ReadAsync(promptArguments, cancellationToken);
-
-        if (string.IsNullOrWhiteSpace(prompt))
+        ParsedRunCommand parsed;
+        try
         {
-            await console.Error.WriteLineAsync(EmptyPromptError.AsMemory(), cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
+            parsed = runCommandParser.Parse(arguments.Skip(1).ToArray());
+        }
+        catch (RunCommandParsingException exception)
+        {
+            await WriteErrorAsync(exception.Message, cancellationToken);
             return ExitCodes.Failure;
         }
 
-        return await runCommandHandler.HandleAsync(prompt, cancellationToken);
+        var prompt = await promptInputReader.ReadAsync(
+            parsed.PositionalPrompt,
+            cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            await WriteErrorAsync(EmptyPromptError, cancellationToken);
+            return ExitCodes.Failure;
+        }
+
+        return await runCommandHandler.HandleAsync(
+            new RunCommandOptions(
+                prompt,
+                parsed.ProjectDirectory,
+                parsed.ModelOverride,
+                parsed.SessionId),
+            cancellationToken);
     }
 
     private async Task<int> RunAuthAsync(
@@ -71,10 +89,9 @@ public sealed class CliApplication(
 
         if (arguments.Count != 2)
         {
-            await console.Error.WriteLineAsync(
-                "Auth commands do not accept additional arguments.".AsMemory(),
+            await WriteErrorAsync(
+                "Auth commands do not accept additional arguments.",
                 cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
 
@@ -94,7 +111,7 @@ public sealed class CliApplication(
 
             Usage:
               {{applicationName}} --help
-              {{applicationName}} run [message...]
+              {{applicationName}} run [--dir <path>] [--model <model>] [--session <id>] [prompt]
               {{applicationName}} auth set
               {{applicationName}} auth status
               {{applicationName}} auth clear
@@ -104,6 +121,44 @@ public sealed class CliApplication(
               auth set     Store the API credential for the current model endpoint.
               auth status  Show the credential status for the current model endpoint.
               auth clear   Remove the stored credential for the current model endpoint without changing the configured API key environment variable.
+
+            Run options:
+              --dir <path>       Project directory. Defaults to the current directory.
+              --model <model>    Model override for this run only.
+              --session <id>     Continue an existing session in the resolved project.
+              stdin              Used when no prompt argument is supplied.
+
+            Output:
+              stdout             Streamed model response only.
+              stderr             Session ID after success, plus metadata and errors.
+
+            Git repositories:
+              Repository subdirectories resolve to the same canonical project root.
+            """;
+
+        await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);
+        await console.Out.FlushAsync(cancellationToken);
+    }
+
+    private async Task WriteRunHelpAsync(CancellationToken cancellationToken)
+    {
+        var applicationName = options.Value.ApplicationName;
+        var help = $$"""
+            Usage:
+              {{applicationName}} run [--dir <path>] [--model <model>] [--session <id>] [prompt]
+
+            Options:
+              --dir <path>       Project directory. Defaults to the current directory.
+              --model <model>    Model override for this run only.
+              --session <id>     Continue an existing session in the resolved project.
+              stdin              Used when no prompt argument is supplied.
+
+            Output:
+              stdout             Streamed model response only.
+              stderr             Session ID after success, plus metadata and errors.
+
+            Git repositories:
+              Repository subdirectories resolve to the same canonical project root.
             """;
 
         await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);
@@ -122,5 +177,13 @@ public sealed class CliApplication(
 
         await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);
         await console.Out.FlushAsync(cancellationToken);
+    }
+
+    private async Task WriteErrorAsync(
+        string message,
+        CancellationToken cancellationToken)
+    {
+        await console.Error.WriteLineAsync(message.AsMemory(), cancellationToken);
+        await console.Error.FlushAsync(cancellationToken);
     }
 }

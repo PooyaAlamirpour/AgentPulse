@@ -44,7 +44,83 @@ public sealed class CredentialCommandTests
         var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
             resolver.ResolveForRunAsync(new ProviderCredentialSession(store)));
 
-        Assert.Contains("cannot be empty", exception.Message, StringComparison.Ordinal);
+        Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
+    }
+
+    [Theory]
+    [InlineData("\rsecret-key")]
+    [InlineData("secret-key\n")]
+    [InlineData("secret\r\nkey")]
+    [InlineData("secret\tkey")]
+    [InlineData("secret\0key")]
+    [InlineData("secret\u0001key")]
+    [InlineData("   ")]
+    public async Task Unsafe_environment_credentials_are_rejected_without_persistence(
+        string unsafeCredential)
+    {
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore();
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader
+            {
+                [ProviderCredentialResolver.EnvironmentVariableName] = unsafeCredential,
+            },
+            store,
+            new RecordingSecretInputReader("unused"),
+            console);
+
+        var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
+            resolver.ResolveForRunAsync(new ProviderCredentialSession(store)));
+
+        Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
+        if (!string.IsNullOrWhiteSpace(unsafeCredential))
+        {
+            Assert.DoesNotContain(unsafeCredential, exception.ToString(), StringComparison.Ordinal);
+        }
+
+        Assert.Equal(0, store.SaveCount);
+    }
+
+    [Theory]
+    [InlineData("\rsecret-key")]
+    [InlineData("secret-key\n")]
+    [InlineData("secret\tkey")]
+    public async Task Unsafe_prompted_credentials_are_rejected_without_persistence(
+        string unsafeCredential)
+    {
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore();
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader(),
+            store,
+            new RecordingSecretInputReader(unsafeCredential),
+            console);
+
+        var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
+            resolver.ResolveForRunAsync(new ProviderCredentialSession(store)));
+
+        Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
+        Assert.Equal(0, store.SaveCount);
+    }
+
+    [Fact]
+    public async Task Unsafe_stored_credential_is_rejected_before_use()
+    {
+        const string unsafeCredential = "stored-key\n";
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore { StoredCredential = unsafeCredential };
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader(),
+            store,
+            new RecordingSecretInputReader("unused"),
+            console);
+
+        var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
+            resolver.ResolveForRunAsync(new ProviderCredentialSession(store)));
+
+        Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
+        Assert.DoesNotContain(unsafeCredential, exception.ToString(), StringComparison.Ordinal);
+        Assert.Equal(0, store.SaveCount);
     }
 
     [Fact]
@@ -201,6 +277,37 @@ public sealed class CredentialCommandTests
         Assert.Equal(ExitCodes.Success, await handler.HandleAsync("clear"));
         Assert.Equal(ExitCodes.Success, await handler.HandleAsync("clear"));
         Assert.Null(store.StoredCredential);
+    }
+
+    [Theory]
+    [InlineData("\rsecret-key")]
+    [InlineData("secret-key\n")]
+    [InlineData("secret\tkey")]
+    public async Task Auth_set_rejects_unsafe_credentials_without_success_or_storage(
+        string unsafeCredential)
+    {
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore();
+        var handler = new AuthCommandHandler(
+            new DictionaryEnvironmentReader(),
+            store,
+            new RecordingSecretInputReader(unsafeCredential),
+            console);
+
+        var exitCode = await handler.HandleAsync("set");
+
+        Assert.Equal(ExitCodes.Failure, exitCode);
+        Assert.Equal(0, store.SaveCount);
+        Assert.Null(store.StoredCredential);
+        Assert.DoesNotContain(
+            "stored securely",
+            console.StandardOutput.ToString(),
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(
+            "contains invalid characters",
+            console.StandardError.ToString(),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(unsafeCredential, console.StandardError.ToString(), StringComparison.Ordinal);
     }
 
     [Fact]

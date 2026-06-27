@@ -42,8 +42,8 @@ public sealed class StreamingRunFailureIntegrationTests
             fixture.RunAsync(CancellationToken.None));
 
         Assert.Equal(ModelRunErrorCode.ProviderFailure, exception.Code);
-        var providerException = Assert.IsType<ModelProviderException>(exception.InnerException);
-        Assert.Equal(ModelFailureStage.AfterFirstToken, providerException.FailureStage);
+        Assert.Null(exception.InnerException);
+        Assert.DoesNotContain("local test connection", exception.Message, StringComparison.OrdinalIgnoreCase);
         await fixture.AssertFinalStateAsync("Hel", MessageStatus.Failed);
     }
 
@@ -120,9 +120,15 @@ public sealed class StreamingRunFailureIntegrationTests
                     factory,
                     clock,
                     new SessionRunOptions { LeaseDuration = TimeSpan.FromMinutes(5) }),
+                new EndSessionRun(
+                    new SessionRepository(preparationContext),
+                    new RunLeaseRepository(preparationContext),
+                    new UnitOfWork(preparationContext),
+                    clock),
                 new RecordingOutputSink(),
                 clock,
                 new BlockingDelay(),
+                new ChatModelRunDefaults("test-model"),
                 new StreamingRunOptions
                 {
                     FlushInterval = TimeSpan.FromHours(1),
@@ -163,6 +169,13 @@ public sealed class StreamingRunFailureIntegrationTests
 
             Assert.Equal(expectedText, Assert.IsType<TextMessagePart>(Assert.Single(message.Parts)).Text);
             Assert.Equal(expectedMessageStatus, message.Status);
+            Assert.Equal("test-model", message.Model);
+            if (expectedMessageStatus == MessageStatus.Failed)
+            {
+                Assert.Equal(ModelProviderErrorCode.Unavailable.ToString(), message.FailureKind);
+                Assert.Equal(ModelFailureStage.AfterFirstToken.ToString(), message.FailureStage);
+            }
+
             Assert.Equal(SessionStatus.Idle, session.Status);
             Assert.Null(lease);
         }

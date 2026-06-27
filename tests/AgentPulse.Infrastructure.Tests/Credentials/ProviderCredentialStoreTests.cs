@@ -26,6 +26,45 @@ public sealed class ProviderCredentialStoreTests
                 parameter => parameter.ParameterType == typeof(ProviderCredentialScope)));
     }
 
+    [Theory]
+    [InlineData("\rsecret-key")]
+    [InlineData("secret-key\n")]
+    [InlineData("secret\r\nkey")]
+    [InlineData("secret\tkey")]
+    [InlineData("secret\0key")]
+    [InlineData("secret\u0001key")]
+    [InlineData("   ")]
+    public async Task Store_rejects_raw_unsafe_credentials_before_writing(
+        string unsafeCredential)
+    {
+        await using var directory = new TemporaryDirectory();
+        var store = new DataProtectionProviderCredentialStore(
+            new ProviderCredentialStoreOptions(directory.Path));
+
+        var exception = await Assert.ThrowsAsync<ProviderCredentialValidationException>(() =>
+            store.SaveAsync(ProviderCredentialScope.XiaomiDefault, unsafeCredential));
+
+        Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
+        if (!string.IsNullOrWhiteSpace(unsafeCredential))
+        {
+            Assert.DoesNotContain(unsafeCredential, exception.ToString(), StringComparison.Ordinal);
+        }
+
+        Assert.Empty(Directory.EnumerateFiles(directory.Path, "provider-*.credential"));
+    }
+
+    [Fact]
+    public async Task Store_normalizes_only_ordinary_surrounding_spaces_after_validation()
+    {
+        await using var directory = new TemporaryDirectory();
+        var store = new DataProtectionProviderCredentialStore(
+            new ProviderCredentialStoreOptions(directory.Path));
+
+        await store.SaveAsync(ProviderCredentialScope.XiaomiDefault, "  valid key  ");
+
+        Assert.Equal("valid key", await store.GetAsync(ProviderCredentialScope.XiaomiDefault));
+    }
+
     [Fact]
     public async Task Scoped_credential_is_encrypted_in_a_temporary_user_scope_root()
     {
@@ -222,6 +261,26 @@ public sealed class ProviderCredentialStoreTests
     }
 
     [Fact]
+    public async Task Rejected_legacy_credential_deletes_scoped_and_legacy_copies_once()
+    {
+        var store = new RecordingCredentialStore
+        {
+            SavedCredential = "legacy-key",
+            LegacyCredential = "legacy-key",
+        };
+        var session = CreateSession(store);
+        session.Set("legacy-key", ProviderCredentialSource.LegacyStored);
+
+        await session.MarkAuthenticationRejectedAsync();
+        await session.MarkAuthenticationRejectedAsync();
+
+        Assert.Equal(1, store.DeleteCount);
+        Assert.Equal(1, store.DeleteLegacyCount);
+        Assert.Null(store.SavedCredential);
+        Assert.Null(store.LegacyCredential);
+    }
+
+    [Fact]
     public async Task Rejected_stored_credential_is_deleted_but_prompted_key_is_not_saved()
     {
         var storedStore = new RecordingCredentialStore();
@@ -270,7 +329,7 @@ public sealed class ProviderCredentialStoreTests
         IProviderCredentialStore,
         ILegacyProviderCredentialStore
     {
-        public string? SavedCredential { get; private set; }
+        public string? SavedCredential { get; set; }
 
         public string? LegacyCredential { get; set; }
 

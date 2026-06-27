@@ -1,46 +1,39 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using System.Text.RegularExpressions;
 using AgentPulse.Application.ChatModels;
 
 namespace AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 
-internal static partial class OpenAiCompatibleProviderErrorParser
+internal static class OpenAiCompatibleProviderErrorParser
 {
     private const int MaximumErrorBodyBytes = 16 * 1024;
-    private const int MaximumSafeMessageLength = 2048;
     private const int MaximumMetadataLength = 128;
 
     public static async Task<ModelProviderException> CreateExceptionAsync(
         HttpResponseMessage response,
         string credential,
-        ChatModelRequest request,
         TimeSpan readTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool credentialCleanupFailed = false,
+        bool credentialCleanupTimedOut = false)
     {
         ArgumentNullException.ThrowIfNull(response);
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
-        ArgumentNullException.ThrowIfNull(request);
 
-        var body = await ReadLimitedBodyAsync(response, readTimeout, cancellationToken);
-        var parsed = ParseBody(body.Value);
-        var sensitiveValues = request.Messages
-            .Select(static message => message.Content)
-            .Where(static content => !string.IsNullOrEmpty(content))
-            .Append(credential)
-            .ToArray();
-        var safeProviderMessage = Sanitize(parsed.Message ?? body.Value, sensitiveValues);
         var statusCode = response.StatusCode;
         var code = MapStatusCode(statusCode);
-        var statusMessage = $"The model endpoint returned HTTP {(int)statusCode}.";
-        var message = string.IsNullOrWhiteSpace(safeProviderMessage)
-            ? statusMessage
-            : $"{statusMessage} {safeProviderMessage}";
+        var body = await ReadLimitedBodyAsync(response, readTimeout, cancellationToken);
+        var parsed = body.TimedOut ? default : ParseBody(body.Value);
+        var message = GetPublicMessage(code);
 
-        if (body.Truncated)
+        if (body.TimedOut)
         {
-            message += " The provider error body was truncated.";
+            message += " Provider error details could not be read before the configured timeout.";
+        }
+        else if (body.Truncated)
+        {
+            message += " Provider error details were truncated.";
         }
 
         return new ModelProviderException(
@@ -48,17 +41,22 @@ internal static partial class OpenAiCompatibleProviderErrorParser
             message,
             ModelFailureStage.BeforeFirstToken,
             httpStatusCode: statusCode,
-            providerErrorCode: SanitizeMetadata(parsed.Code, sensitiveValues),
-            providerErrorType: SanitizeMetadata(parsed.Type, sensitiveValues),
+            providerErrorCode: SanitizeIdentifier(parsed.Code, credential),
+            providerErrorType: SanitizeIdentifier(parsed.Type, credential),
             retryAfter: GetRetryAfter(response),
-            requestId: GetRequestId(response, sensitiveValues));
+            requestId: GetRequestId(response, credential),
+            errorBodyReadTimedOut: body.TimedOut,
+            credentialCleanupFailed: credentialCleanupFailed,
+            credentialCleanupTimedOut: credentialCleanupTimedOut);
     }
 
     public static ModelProviderException CreateRedirectException(
         HttpResponseMessage response,
         string credential)
     {
+        ArgumentNullException.ThrowIfNull(response);
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
+
         var location = response.Headers.Location;
         var safeLocation = location is null
             ? null
@@ -67,15 +65,15 @@ internal static partial class OpenAiCompatibleProviderErrorParser
                 "[REDACTED]",
                 StringComparison.Ordinal);
         var message = safeLocation is null
-            ? $"The model endpoint returned redirect HTTP {(int)response.StatusCode}; redirects are not followed."
-            : $"The model endpoint returned redirect HTTP {(int)response.StatusCode} to '{safeLocation}'; redirects are not followed.";
+            ? $"The model provider returned redirect HTTP {(int)response.StatusCode}; redirects are not followed."
+            : $"The model provider returned redirect HTTP {(int)response.StatusCode} to '{safeLocation}'; redirects are not followed.";
 
         return new ModelProviderException(
             ModelProviderErrorCode.InvalidResponse,
             message,
             ModelFailureStage.BeforeFirstToken,
             httpStatusCode: response.StatusCode,
-            requestId: GetRequestId(response, [credential]));
+            requestId: GetRequestId(response, credential));
     }
 
     private static async Task<ErrorBody> ReadLimitedBodyAsync(
@@ -125,26 +123,20 @@ internal static partial class OpenAiCompatibleProviderErrorParser
                     encoderShouldEmitUTF8Identifier: false,
                     throwOnInvalidBytes: false)
                 .GetString(output.ToArray());
-            return new ErrorBody(value, truncated);
+            return new ErrorBody(value, truncated, TimedOut: false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
-        catch (OperationCanceledException exception)
+        catch (OperationCanceledException)
         {
-            throw new ModelProviderException(
-                ModelProviderErrorCode.Timeout,
-                $"The provider error body was not received before the configured timeout of {readTimeout}.",
-                ModelFailureStage.BeforeFirstToken,
-                exception);
+            return new ErrorBody(string.Empty, Truncated: false, TimedOut: true);
         }
         catch (Exception exception) when (
             exception is IOException or HttpRequestException)
         {
-            return new ErrorBody(
-                $"The provider error body could not be read ({exception.GetType().Name}).",
-                Truncated: false);
+            return new ErrorBody(string.Empty, Truncated: false, TimedOut: false);
         }
     }
 
@@ -160,7 +152,7 @@ internal static partial class OpenAiCompatibleProviderErrorParser
             using var document = JsonDocument.Parse(value);
             if (document.RootElement.ValueKind != JsonValueKind.Object)
             {
-                return new ParsedError(value, null, null);
+                return default;
             }
 
             var error = document.RootElement.TryGetProperty("error", out var wrapped) &&
@@ -168,22 +160,13 @@ internal static partial class OpenAiCompatibleProviderErrorParser
                 ? wrapped
                 : document.RootElement;
             return new ParsedError(
-                GetString(error, "message"),
                 GetScalar(error, "type"),
                 GetScalar(error, "code"));
         }
         catch (JsonException)
         {
-            return new ParsedError(value, null, null);
+            return default;
         }
-    }
-
-    private static string? GetString(JsonElement value, string propertyName)
-    {
-        return value.TryGetProperty(propertyName, out var property) &&
-               property.ValueKind == JsonValueKind.String
-            ? property.GetString()
-            : null;
     }
 
     private static string? GetScalar(JsonElement value, string propertyName)
@@ -197,6 +180,28 @@ internal static partial class OpenAiCompatibleProviderErrorParser
         return property.ValueKind == JsonValueKind.String
             ? property.GetString()
             : property.GetRawText();
+    }
+
+    private static string GetPublicMessage(ModelProviderErrorCode code)
+    {
+        return code switch
+        {
+            ModelProviderErrorCode.Authentication =>
+                "The model provider rejected the API credential.",
+            ModelProviderErrorCode.PermissionDenied =>
+                "The model provider denied access to the requested resource.",
+            ModelProviderErrorCode.RateLimited =>
+                "The model provider rate limit was exceeded.",
+            ModelProviderErrorCode.InvalidRequest =>
+                "The model provider rejected the request.",
+            ModelProviderErrorCode.Unavailable =>
+                "The model provider is temporarily unavailable.",
+            ModelProviderErrorCode.Timeout =>
+                "The model provider request timed out.",
+            ModelProviderErrorCode.Protocol =>
+                "The model provider returned an invalid protocol response.",
+            _ => "The model provider returned an invalid response.",
+        };
     }
 
     private static ModelProviderErrorCode MapStatusCode(HttpStatusCode statusCode)
@@ -233,109 +238,40 @@ internal static partial class OpenAiCompatibleProviderErrorParser
 
     private static string? GetRequestId(
         HttpResponseMessage response,
-        IReadOnlyCollection<string> sensitiveValues)
+        string credential)
     {
         foreach (var headerName in new[] { "x-request-id", "request-id", "x-correlation-id" })
         {
-            if (response.Headers.TryGetValues(headerName, out var values))
+            if (!response.Headers.TryGetValues(headerName, out var values))
             {
-                var value = values.FirstOrDefault();
-                if (value is null)
-                {
-                    return null;
-                }
-
-                foreach (var sensitiveValue in sensitiveValues)
-                {
-                    if (!string.IsNullOrEmpty(sensitiveValue))
-                    {
-                        value = value.Replace(
-                            sensitiveValue,
-                            "[REDACTED]",
-                            StringComparison.Ordinal);
-                    }
-                }
-
-                return SanitizeMetadata(value);
+                continue;
             }
+
+            return SanitizeIdentifier(values.FirstOrDefault(), credential);
         }
 
         return null;
     }
 
-    private static string? SanitizeMetadata(
-        string? value,
-        IReadOnlyCollection<string>? sensitiveValues = null)
+    private static string? SanitizeIdentifier(string? value, string credential)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Contains(credential, StringComparison.Ordinal))
         {
             return null;
         }
 
-        var normalized = value.Trim();
-        if (sensitiveValues is not null)
+        var normalized = value.Trim(' ');
+        if (normalized.Length == 0 || normalized.Length > MaximumMetadataLength)
         {
-            foreach (var sensitiveValue in sensitiveValues)
-            {
-                if (!string.IsNullOrEmpty(sensitiveValue))
-                {
-                    normalized = normalized.Replace(
-                        sensitiveValue,
-                        "[REDACTED]",
-                        StringComparison.Ordinal);
-                }
-            }
+            return null;
         }
 
-        var sanitized = new string(normalized
-            .Where(character => !char.IsControl(character))
-            .Take(MaximumMetadataLength)
-            .ToArray());
-        return string.IsNullOrWhiteSpace(sanitized) ? null : sanitized;
-    }
-
-    private static string Sanitize(string value, IEnumerable<string> sensitiveValues)
-    {
-        var sanitized = value;
-        foreach (var sensitiveValue in sensitiveValues)
-        {
-            if (!string.IsNullOrEmpty(sensitiveValue))
-            {
-                sanitized = sanitized.Replace(
-                    sensitiveValue,
-                    "[REDACTED]",
-                    StringComparison.Ordinal);
-            }
-        }
-
-        sanitized = SensitiveHeaderRegex().Replace(
-            sanitized,
-            "$1: [REDACTED]");
-        sanitized = SensitiveHeaderNameRegex().Replace(
-            sanitized,
-            "[REDACTED]");
-        sanitized = UrlRegex().Replace(
-            sanitized,
-            static match => SanitizeUrlText(match.Value));
-        sanitized = string.Join(
-            ' ',
-            sanitized.Split(
-                (char[]?)null,
-                StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
-
-        return sanitized.Length <= MaximumSafeMessageLength
-            ? sanitized
-            : sanitized[..MaximumSafeMessageLength];
-    }
-
-    private static string SanitizeUrlText(string value)
-    {
-        if (!Uri.TryCreate(value.TrimEnd('.', ',', ';', ')', ']', '}'), UriKind.Absolute, out var uri))
-        {
-            return "[REDACTED-URL]";
-        }
-
-        return SanitizeLocation(uri);
+        return normalized.All(static character =>
+                char.IsAsciiLetterOrDigit(character) ||
+                character is '_' or '-' or '.' or ':' or '/')
+            ? normalized
+            : null;
     }
 
     private static string SanitizeLocation(Uri location)
@@ -355,16 +291,10 @@ internal static partial class OpenAiCompatibleProviderErrorParser
         return builder.Uri.GetLeftPart(UriPartial.Path);
     }
 
-    [GeneratedRegex(@"(?im)\b(authorization|api-key|x-api-key)\s*:\s*[^\r\n]+")]
-    private static partial Regex SensitiveHeaderRegex();
+    private readonly record struct ErrorBody(
+        string Value,
+        bool Truncated,
+        bool TimedOut);
 
-    [GeneratedRegex(@"(?i)\b(?:authorization|api-key|x-api-key)\b")]
-    private static partial Regex SensitiveHeaderNameRegex();
-
-    [GeneratedRegex("https?://[^\\s\"'<>]+", RegexOptions.IgnoreCase)]
-    private static partial Regex UrlRegex();
-
-    private readonly record struct ErrorBody(string Value, bool Truncated);
-
-    private readonly record struct ParsedError(string? Message, string? Type, string? Code);
+    private readonly record struct ParsedError(string? Type, string? Code);
 }

@@ -1,3 +1,4 @@
+using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.ProjectContexts;
 using AgentPulse.Application.SessionRuns;
@@ -33,7 +34,13 @@ public sealed class StreamingRunPersistence(
                 $"Assistant message '{assistantMessageId}' is not streaming.");
         }
 
-        GetTextPart(message).ReplaceText(completeText, utcNow);
+        var textPart = GetTextPart(message);
+        if (string.Equals(textPart.Text, completeText, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        textPart.ReplaceText(completeText, utcNow);
         await dbContext.SaveChangesAsync(cancellationToken);
     }
 
@@ -42,16 +49,21 @@ public sealed class StreamingRunPersistence(
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
+        AssistantCompletionMetadata metadata,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(metadata);
+
         return FinalizeAsync(
             sessionId,
             assistantMessageId,
             leaseId,
             completeText,
             FinalState.Completed,
-            failureReason: null,
-            cancellationToken);
+            completionMetadata: metadata,
+            failureMetadata: null,
+            model: metadata.Model,
+            cancellationToken: cancellationToken);
     }
 
     public Task FailAsync(
@@ -59,10 +71,10 @@ public sealed class StreamingRunPersistence(
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
-        string failureReason,
+        AssistantFailureMetadata metadata,
         CancellationToken cancellationToken = default)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(failureReason);
+        ArgumentNullException.ThrowIfNull(metadata);
 
         return FinalizeAsync(
             sessionId,
@@ -70,8 +82,10 @@ public sealed class StreamingRunPersistence(
             leaseId,
             completeText,
             FinalState.Failed,
-            failureReason.Trim(),
-            cancellationToken);
+            completionMetadata: null,
+            failureMetadata: metadata,
+            model: metadata.Model,
+            cancellationToken: cancellationToken);
     }
 
     public Task CancelAsync(
@@ -79,16 +93,21 @@ public sealed class StreamingRunPersistence(
         MessageId assistantMessageId,
         RunLeaseId leaseId,
         string completeText,
+        string model,
         CancellationToken cancellationToken = default)
     {
+        ArgumentException.ThrowIfNullOrWhiteSpace(model);
+
         return FinalizeAsync(
             sessionId,
             assistantMessageId,
             leaseId,
             completeText,
             FinalState.Cancelled,
-            failureReason: null,
-            cancellationToken);
+            completionMetadata: null,
+            failureMetadata: null,
+            model: model.Trim(),
+            cancellationToken: cancellationToken);
     }
 
     private async Task FinalizeAsync(
@@ -97,7 +116,9 @@ public sealed class StreamingRunPersistence(
         RunLeaseId leaseId,
         string completeText,
         FinalState finalState,
-        string? failureReason,
+        AssistantCompletionMetadata? completionMetadata,
+        AssistantFailureMetadata? failureMetadata,
+        string model,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(completeText);
@@ -120,43 +141,64 @@ public sealed class StreamingRunPersistence(
                 "The assistant message does not belong to the active session.");
         }
 
-        var session = await dbContext.Sessions.SingleOrDefaultAsync(
-                value => value.Id == sessionId,
-                cancellationToken)
-            ?? throw new SessionRunException(
-                SessionRunErrorCode.SessionNotFound,
-                $"Session '{sessionId}' does not exist or is no longer available.");
+        if (!string.Equals(message.Model, model, StringComparison.Ordinal))
+        {
+            throw new SessionRunException(
+                SessionRunErrorCode.InvalidSessionState,
+                "The assistant message model does not match the active run.");
+        }
 
         var runLease = await dbContext.RunLeases.SingleOrDefaultAsync(
             value => value.SessionId == sessionId,
             cancellationToken);
 
-        if (runLease is not null && runLease.LeaseId != leaseId)
-        {
-            throw new SessionRunException(
-                SessionRunErrorCode.RunLeaseOwnershipMismatch,
-                "The run lease can only be released by its owner.");
-        }
-
-        if (finalState == FinalState.Completed && runLease is null)
+        if (runLease is null)
         {
             throw new SessionRunException(
                 SessionRunErrorCode.RunLeaseNotFound,
                 $"Session '{sessionId}' has no active run lease.");
         }
 
-        GetTextPart(message).ReplaceText(completeText, utcNow);
-        ApplyMessageState(message, finalState, failureReason, utcNow);
-
-        if (runLease is not null)
+        if (runLease.LeaseId != leaseId)
         {
-            dbContext.RunLeases.Remove(runLease);
+            throw new SessionRunException(
+                SessionRunErrorCode.RunLeaseOwnershipMismatch,
+                "The run lease can only be finalized by its owner.");
         }
 
-        if (session.Status == SessionStatus.Running)
+        var textPart = GetTextPart(message);
+        var expectedStatus = GetExpectedStatus(finalState);
+        if (message.Status == expectedStatus)
         {
-            session.Stop(utcNow);
+            if (!string.Equals(textPart.Text, completeText, StringComparison.Ordinal))
+            {
+                throw new SessionRunException(
+                    SessionRunErrorCode.InvalidSessionState,
+                    $"Assistant message '{message.Id}' was already finalized with different content.");
+            }
+
+            await transaction.CommitAsync(cancellationToken);
+            return;
         }
+
+        if (message.Status != MessageStatus.Streaming)
+        {
+            throw new SessionRunException(
+                SessionRunErrorCode.InvalidSessionState,
+                $"Assistant message '{message.Id}' is not streaming.");
+        }
+
+        if (!string.Equals(textPart.Text, completeText, StringComparison.Ordinal))
+        {
+            textPart.ReplaceText(completeText, utcNow);
+        }
+
+        ApplyMessageState(
+            message,
+            finalState,
+            completionMetadata,
+            failureMetadata,
+            utcNow);
 
         await dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
@@ -196,44 +238,44 @@ public sealed class StreamingRunPersistence(
     private static void ApplyMessageState(
         Message message,
         FinalState finalState,
-        string? failureReason,
+        AssistantCompletionMetadata? completionMetadata,
+        AssistantFailureMetadata? failureMetadata,
         DateTime utcNow)
     {
-        if (message.Status != MessageStatus.Streaming)
-        {
-            var expectedStatus = finalState switch
-            {
-                FinalState.Completed => MessageStatus.Completed,
-                FinalState.Failed => MessageStatus.Failed,
-                FinalState.Cancelled => MessageStatus.Cancelled,
-                _ => throw new ArgumentOutOfRangeException(nameof(finalState)),
-            };
-
-            if (message.Status == expectedStatus)
-            {
-                return;
-            }
-
-            throw new SessionRunException(
-                SessionRunErrorCode.InvalidSessionState,
-                $"Assistant message '{message.Id}' is not streaming.");
-        }
-
         switch (finalState)
         {
             case FinalState.Completed:
-                message.Complete(utcNow);
+                var usage = completionMetadata!.Usage;
+                message.Complete(
+                    completionMetadata.FinishReason.ToString(),
+                    usage?.InputTokens,
+                    usage?.OutputTokens,
+                    usage?.TotalTokens,
+                    utcNow);
                 break;
             case FinalState.Failed:
-                message.Fail(failureReason, utcNow);
+                message.Fail(
+                    failureMetadata!.Reason,
+                    failureMetadata.Kind,
+                    failureMetadata.Stage,
+                    failureMetadata.StatusCode,
+                    utcNow);
                 break;
             case FinalState.Cancelled:
-                message.Cancel(utcNow);
+                message.Cancel(ModelFinishReason.Cancelled.ToString(), utcNow);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(finalState));
         }
     }
+
+    private static MessageStatus GetExpectedStatus(FinalState finalState) => finalState switch
+    {
+        FinalState.Completed => MessageStatus.Completed,
+        FinalState.Failed => MessageStatus.Failed,
+        FinalState.Cancelled => MessageStatus.Cancelled,
+        _ => throw new ArgumentOutOfRangeException(nameof(finalState)),
+    };
 
     private DateTime GetUtcNow()
     {

@@ -98,6 +98,14 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             await _console.Error.FlushAsync(CancellationToken.None);
             return ExitCodes.Cancelled;
         }
+        catch (ProviderCredentialValidationException exception)
+        {
+            await _console.Error.WriteLineAsync(
+                exception.Message.AsMemory(),
+                cancellationToken);
+            await _console.Error.FlushAsync(cancellationToken);
+            return ExitCodes.Failure;
+        }
         catch (ProviderCredentialStoreException exception)
         {
             await _console.Error.WriteLineAsync(
@@ -124,16 +132,8 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             cancellationToken);
         await _console.Error.FlushAsync(cancellationToken);
 
-        var credential = (await _secretInputReader.ReadAsync(cancellationToken)).Trim();
-        if (string.IsNullOrWhiteSpace(credential))
-        {
-            await _console.Error.WriteLineAsync(
-                "The API credential cannot be empty.".AsMemory(),
-                cancellationToken);
-            await _console.Error.FlushAsync(cancellationToken);
-            return ExitCodes.Failure;
-        }
-
+        var credential = ProviderCredentialValidator.ValidateAndNormalize(
+            await _secretInputReader.ReadAsync(cancellationToken));
         await _credentialStore.SaveAsync(_scope, credential, cancellationToken);
         await _console.Out.WriteLineAsync(
             "API credential was stored securely for the current model endpoint.".AsMemory(),
@@ -148,8 +148,9 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             _options.ApiKeyEnvironmentVariable);
 
         string message;
-        if (!string.IsNullOrWhiteSpace(environmentCredential))
+        if (environmentCredential is not null)
         {
+            ProviderCredentialValidator.ValidateAndNormalize(environmentCredential);
             message = "Configured API key environment variable is available.";
         }
         else

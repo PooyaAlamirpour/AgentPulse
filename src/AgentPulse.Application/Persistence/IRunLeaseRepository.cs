@@ -11,5 +11,14 @@ public interface IRunLeaseRepository
 
     Task AddAsync(RunLease runLease, CancellationToken cancellationToken = default);
 
+    Task<RunLeaseId?> GetLeaseIdAsync(
+        SessionId sessionId,
+        CancellationToken cancellationToken = default);
+
+    Task<bool> RemoveOwnedAsync(
+        SessionId sessionId,
+        RunLeaseId leaseId,
+        CancellationToken cancellationToken = default);
+
     void Remove(RunLease runLease);
 }
