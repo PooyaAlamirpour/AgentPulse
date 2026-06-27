@@ -1,136 +1,117 @@
 # AgentPulse
 
-**AgentPulse** is an open-source, cross-platform .NET 8 command-line project for building a project-aware AI assistant with persistent conversations, streaming responses, Git-aware context, and reliable recovery from failures or cancellation.
+**AgentPulse** is an open-source, cross-platform .NET 8 command-line assistant with project-aware prompts, persistent conversations, real-time model streaming, secure credential storage, Git-aware context, and recovery-safe session state.
 
-The project is being developed incrementally through a clearly defined 10-phase roadmap. The current implementation has completed **Phase 5**, which means session lifecycle, ordered history, and provider-independent model-request construction are in place alongside the earlier foundation.
+The implementation is developed through a 10-phase roadmap. **Phase 6 is complete**: `agentpulse run` now connects to Xiaomi MiMo through its OpenAI-compatible Chat Completions endpoint, renders text deltas immediately, persists partial output safely, renews the run lease, and finalizes cancelled or failed runs without discarding received text.
 
-> **Development status:** Active development — **6 of 10 phases completed**  
-> **Current milestone:** Phase 5 — Model Request Construction  
-> **AI provider status:** Not connected yet; real model streaming is introduced in later phases.
+> **Development status:** Active development — **7 of 10 phases completed**  
+> **Current milestone:** Phase 6 — Real Xiaomi MiMo Streaming and Secure Credentials  
+> **Provider:** Xiaomi MiMo, default model `mimo-v2.5-pro`
 
----
-
-## Why AgentPulse?
-
-AgentPulse is designed to provide a clean, testable, and extensible foundation for AI-assisted development workflows without coupling the core application to a specific model provider, database implementation, console framework, or operating system.
-
-The project focuses on:
-
-- Project-aware execution
-- Persistent sessions and conversation history
-- Streaming model responses
-- Reliable cancellation and crash recovery
-- OpenAI-compatible provider support
-- Deterministic project identification
-- Git repository and worktree awareness
-- Cross-platform CLI behavior
-- Clean Architecture and strict dependency boundaries
-- Real integration testing with SQLite, Git, and operating-system processes
+> [!WARNING]
+> Calls to the Xiaomi MiMo API may incur usage charges. Review the provider's current pricing and account limits before running prompts or opt-in live tests.
 
 ---
 
 ## Current Capabilities
 
-The following capabilities are already implemented:
+### CLI
 
-### CLI Foundation
-
-- .NET 8 command-line application
 - `agentpulse --help`
 - `agentpulse run [message...]`
-- Prompt input from command-line arguments
-- Prompt input from `stdin`
-- Clear handling of empty input
-- Correct separation of `stdout` and `stderr`
-- `Ctrl+C` cancellation support
-- Generic Host, dependency injection, configuration, options, and logging
-- Explicit non-zero exit codes for failures
+- Prompt input from arguments or redirected `stdin`
+- Immediate streaming of model text to `stdout`
+- Errors and credential prompts on `stderr`
+- A single final newline after successful completion
+- `Ctrl+C` cancellation with exit code `130`
+- Non-zero exit codes for provider, persistence, configuration, and input failures
+- Credential commands:
+  - `agentpulse auth set`
+  - `agentpulse auth status`
+  - `agentpulse auth clear`
 
-### Domain and Persistence
+### Xiaomi MiMo Provider
 
-- Domain models for:
-  - Project
-  - Session
-  - Message
-  - Message parts
-  - Text message parts
-- Strongly typed identifiers
-- UTC timestamps
-- Deterministic message sequencing
-- Message states:
-  - Pending
-  - Streaming
-  - Completed
-  - Failed
-  - Cancelled
-- Session states:
-  - Idle
-  - Running
-- Entity Framework Core
-- SQLite persistence
-- Database migrations
-- Foreign-key enforcement
-- Required indexes and uniqueness constraints
-- Repository abstractions
-- Unit of Work and transaction support
-- Commit and rollback integration tests
+- OpenAI-compatible `POST /chat/completions`
+- Default base URL: `https://api.xiaomimimo.com/v1`
+- Default model: `mimo-v2.5-pro`
+- Per-request `api-key` authentication header
+- `stream: true`
+- `max_completion_tokens: 4096`
+- `thinking.type: disabled`
+- `IHttpClientFactory` and `HttpCompletionOption.ResponseHeadersRead`
+- Incremental Server-Sent Events parsing without buffering the complete response
+- Distinct first-byte and stream-idle timeouts
+- Cancellation propagated through HTTP and stream reads
+- No automatic retry for streaming requests
+- No tools, function calls, plugins, web search, attachments, or reasoning-content persistence
+
+### Secure Credentials
+
+Credential resolution order for `run`:
+
+1. `MIMO_API_KEY` environment variable
+2. Securely stored user credential
+3. Hidden interactive prompt
+
+The first interactive `run` without a configured key displays:
+
+```text
+Xiaomi MiMo API key was not found.
+Enter MIMO_API_KEY:
+```
+
+The API key is entered without echo. A prompted key is stored only after Xiaomi returns a successful HTTP `2xx` response. Environment credentials are never copied into the credential store. If a stored credential receives `401` or `403`, it is removed so the next run can request a replacement.
+
+The credential is protected in the current user's local application-data scope under the logical path:
+
+```text
+<LocalApplicationData>/AgentPulse/security/
+```
+
+The exact operating-system path is derived at runtime. The protected credential is never stored in `appsettings`, SQLite, the repository, Git configuration, a command-line argument, or a plaintext credential file. Windows key-ring protection uses user-scoped DPAPI. Unix directories and files are restricted to the current user.
+
+### Persistence and Recovery
+
+- Default runtime database path: `<LocalApplicationData>/AgentPulse/data/agentpulse.db`
+- Stable user-scoped storage shared by Debug, Release, and published executions
+- `AgentPulse__Persistence__DatabasePath` override support; relative overrides are normalized against the current working directory
+- Design-time migrations use a separate temporary database and never open the user's runtime database by default
+- Project, Session, Message, MessagePart, and RunLease domain models
+- Entity Framework Core with SQLite and migrations
+- User message committed before provider execution
+- Streaming assistant message and empty text part committed before the HTTP request
+- Ordered previous history with the current prompt included exactly once
+- Immediate delta rendering and exact ordered text accumulation
+- Configurable partial flush interval and character threshold
+- Final flush on success, cancellation, or failure
+- Partial text preserved after cancellation or provider failure
+- Session returned to `Idle` on every finalized path
+- Lease released only by its owner
+- Independent periodic lease renewal during long streams
+- Provider cancellation, HTTP errors, malformed SSE, incomplete streams, and lost leases mapped to safe failures
 
 ### Project Context
 
 - Absolute and relative path resolution
-- Path normalization
-- Current-directory fallback
-- Validation of missing paths and file paths
-- Git executable detection
-- Git repository discovery
-- Repository-root detection
-- Git worktree detection
-- Correct handling of repository subdirectories
-- Deterministic project identifiers
-- Stable identifiers across repeated executions
-- Distinct identifiers for separate worktrees
-- Valid context creation for non-Git directories
-- Graceful behavior when Git is unavailable
-- Asynchronous process execution
-- Process timeout and cancellation
-- Separate capture of process output, errors, and exit codes
-- Platform and UTC-date abstraction
+- Current-directory fallback and path normalization
+- Git executable, repository root, and worktree discovery
+- Stable deterministic project identifiers
+- Separate identifiers for distinct worktrees
+- Non-Git directory support
+- Testable platform, clock, filesystem, Git, and process abstractions
 
-### Quality and Architecture
+### Architecture and Quality
 
-- Clean Architecture
-- One-way project dependencies
+- Clean Architecture with one-way dependencies
+- Domain isolated from HTTP, Xiaomi, SSE, console, credentials, and EF Core
+- Application owns provider-independent streaming orchestration and flush policy
+- Infrastructure owns Xiaomi transport, SSE, secure credentials, EF Core, and SQLite
+- CLI owns hidden input, console rendering, commands, and exit codes
 - Nullable reference types enabled
 - Warnings treated as errors
-- Domain and Application layers isolated from infrastructure details
-- Unit and integration test projects
-- Real SQLite integration tests
-- Real temporary Git repository and worktree tests
-- Naming convention tests
-- No dependency on external APIs for automated tests
-
----
-
-## Planned End-State Capabilities
-
-When the initial roadmap is complete, AgentPulse will support:
-
-- Creating and continuing persistent sessions
-- Loading ordered conversation history
-- Preventing concurrent runs on the same session
-- Recovering abandoned sessions after interruption
-- Building provider-independent model requests
-- Adding project context to system instructions
-- Streaming text to the console as it arrives
-- Periodically persisting partial responses
-- Preserving incomplete output after errors or cancellation
-- Calling OpenAI-compatible model providers
-- Configurable API key, model, and base URL
-- Robust Server-Sent Events parsing
-- Running prompts against a selected directory
-- Continuing an existing session by identifier
-- Consistent exit codes and CLI behavior
-- Crash-safe end-to-end prompt execution
+- Automated tests use local HTTP servers and temporary credential/database roots
+- Normal tests require neither internet access nor an API key
 
 ---
 
@@ -141,15 +122,13 @@ When the initial roadmap is complete, AgentPulse will support:
 | Runtime | .NET 8 |
 | Language | C# |
 | Architecture | Clean Architecture |
-| Hosting | .NET Generic Host |
-| Dependency Injection | Microsoft.Extensions.DependencyInjection |
-| Configuration | Microsoft.Extensions.Configuration and Options |
-| Persistence | Entity Framework Core |
+| Hosting and DI | .NET Generic Host and Microsoft.Extensions.DependencyInjection |
+| HTTP | `HttpClient` and `IHttpClientFactory` |
+| Secret protection | ASP.NET Core Data Protection |
+| Persistence | Entity Framework Core 8 |
 | Database | SQLite |
 | Testing | xUnit |
 | Version-control discovery | Git CLI |
-| Process execution | `System.Diagnostics.Process` behind abstractions |
-| Planned model transport | `HttpClient` with OpenAI-compatible streaming |
 
 ---
 
@@ -164,15 +143,11 @@ flowchart LR
     INFRA --> DOMAIN
 ```
 
-### Dependency Rules
-
 - `AgentPulse.Domain` has no dependency on other project layers.
-- `AgentPulse.Application` depends only on the Domain layer.
-- `AgentPulse.Infrastructure` implements Application abstractions.
-- `AgentPulse.Cli` acts as the Composition Root.
-- Domain and Application code do not access EF Core, SQLite, the console, real files, environment variables, Git processes, or HTTP clients directly.
-
-### Solution Structure
+- `AgentPulse.Application` depends only on Domain.
+- `AgentPulse.Infrastructure` implements Application ports.
+- `AgentPulse.Cli` is the Composition Root.
+- Application contracts do not expose Xiaomi-specific DTOs or API-key handling.
 
 ```text
 src/
@@ -186,25 +161,16 @@ tests/
   AgentPulse.Application.Tests
   AgentPulse.Infrastructure.Tests
   AgentPulse.Cli.IntegrationTests
-
-docs/
-  architecture-decisions.md
-  node-behavior-baseline.md
-  node-to-dotnet-map.md
 ```
 
 ---
 
-## Getting Started
+## Build and Test
 
-### Prerequisites
+Prerequisites:
 
-- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- .NET 8 SDK
 - Git, recommended for project-context features
-
-### Build and Test
-
-From the directory containing `AgentPulse.sln`:
 
 ```bash
 dotnet restore
@@ -212,270 +178,188 @@ dotnet build --no-restore -warnaserror
 dotnet test --no-build
 ```
 
-### Run the CLI
+Normal tests use deterministic local HTTP servers and do not call Xiaomi or require `MIMO_API_KEY`.
 
-Display help:
+### Optional Live Xiaomi Test
 
-```bash
-dotnet run --project src/AgentPulse.Cli -- --help
+The live test reads **only** environment variables and never reads the user's stored credential. It runs only when both `MIMO_API_KEY` is present and `AGENTPULSE_RUN_LIVE_TESTS` is exactly `1`. This explicit second flag prevents a normal `dotnet test` from making a paid request when an API key is permanently configured.
+
+PowerShell:
+
+```powershell
+$env:MIMO_API_KEY="..."
+$env:AGENTPULSE_RUN_LIVE_TESTS="1"
+dotnet test --no-build --filter "Category=LiveXiaomi"
 ```
 
-Pass a prompt as an argument:
+Bash:
 
 ```bash
+MIMO_API_KEY="..." AGENTPULSE_RUN_LIVE_TESTS="1" \
+  dotnet test --no-build --filter "Category=LiveXiaomi"
+```
+
+---
+
+## Running AgentPulse
+
+### First Interactive Run
+
+```bash
+dotnet run --project src/AgentPulse.Cli -- run "Reply with exactly: Hello"
+```
+
+When no credential exists, the CLI requests it with hidden input. After a successful `2xx` provider response, it is protected in the current user's credential store. A later run reuses it without another prompt.
+
+### Environment Variable
+
+PowerShell:
+
+```powershell
+$env:MIMO_API_KEY="..."
 dotnet run --project src/AgentPulse.Cli -- run "Explain this project"
 ```
 
-Pipe a prompt through standard input:
+Bash:
 
 ```bash
-echo "Explain this project" | dotnet run --project src/AgentPulse.Cli -- run
+MIMO_API_KEY="..." dotnet run --project src/AgentPulse.Cli -- run "Explain this project"
 ```
 
-PowerShell example:
+### Redirected Standard Input
+
+A redirected process cannot securely read a missing API key from the same stream. Configure a stored credential or `MIMO_API_KEY` first:
 
 ```powershell
+$env:MIMO_API_KEY="..."
 "Explain this project" | dotnet run --project src/AgentPulse.Cli -- run
 ```
 
-> At the current milestone, provider-independent model requests can be built from project context and persisted conversation messages, but the CLI does not call an AI model yet. Streaming, provider integration, and complete end-to-end execution are scheduled for later phases.
+Without either credential source, the CLI exits non-zero and directs the user to set `MIMO_API_KEY` or run `agentpulse auth set`.
+
+### Credential Commands
+
+Store or replace a credential with hidden input:
+
+```bash
+dotnet run --project src/AgentPulse.Cli -- auth set
+```
+
+Show only the configured source status, never key metadata:
+
+```bash
+dotnet run --project src/AgentPulse.Cli -- auth status
+```
+
+Remove the stored credential without changing the environment variable:
+
+```bash
+dotnet run --project src/AgentPulse.Cli -- auth clear
+```
 
 ---
 
-## Roadmap at a Glance
+## Configuration
+
+Non-secret provider settings can be overridden through configuration or environment variables:
+
+```text
+AgentPulse:Xiaomi:BaseUrl
+AgentPulse:Xiaomi:Model
+AgentPulse:Xiaomi:MaxCompletionTokens
+AgentPulse:Xiaomi:ThinkingMode
+AgentPulse:Xiaomi:FirstByteTimeout
+AgentPulse:Xiaomi:StreamIdleTimeout
+AgentPulse:Streaming:FlushInterval
+AgentPulse:Streaming:FlushCharacterThreshold
+AgentPulse:Streaming:LeaseRenewInterval
+AgentPulse:Persistence:DatabasePath
+```
+
+Environment-variable examples use double underscores, such as:
+
+```text
+AgentPulse__Xiaomi__BaseUrl
+AgentPulse__Xiaomi__Model
+AgentPulse__Persistence__DatabasePath
+```
+
+The default database is stored in the current user's local application-data directory. At runtime, an absolute override is used directly and a relative override is normalized against the process current directory. At design time, an override must be absolute; relative paths are rejected to prevent database creation inside the repository. `MIMO_API_KEY` is intentionally separate from bindable JSON options.
+
+---
+
+## Roadmap
 
 | Phase | Status | Title | Key Capabilities |
 |---:|:---:|---|---|
-| 0 | ✅ | Behavioral Baseline | Observable behavior, scope, architecture mapping, implementation decisions |
-| 1 | ✅ | Solution and CLI Foundation | Solution structure, Generic Host, DI, CLI input, `stdin`, cancellation |
-| 2 | ✅ | Domain and Persistence | Domain entities, SQLite, EF Core, migrations, repositories, transactions |
-| 3 | ✅ | Project Context | Path normalization, Git discovery, worktrees, stable project identifiers |
-| 4 | ✅ | Session and Message Lifecycle | Create/continue sessions, ordered history, run locking, recovery |
-| 5 | ✅ | Model Request Construction | Provider-independent contracts, system context, history conversion |
-| 6 | ⬜ | Streaming with a Fake Provider | Stream events, console deltas, partial persistence, cancellation |
-| 7 | ⬜ | OpenAI-Compatible Provider | HTTP streaming, SSE parser, configuration, provider error handling |
-| 8 | ⬜ | End-to-End Vertical Flow | Full prompt orchestration, persistence, streaming, session continuation |
-| 9 | ⬜ | CLI Hardening and Compatibility | Exit codes, crash recovery, edge cases, documentation, final integration tests |
+| 0 | ✅ | Behavioral Baseline | Scope, observable behavior, architecture mapping, decisions |
+| 1 | ✅ | Solution and CLI Foundation | Generic Host, DI, CLI input, `stdin`, cancellation |
+| 2 | ✅ | Domain and Persistence | Entities, SQLite, migrations, repositories, transactions |
+| 3 | ✅ | Project Context | Paths, Git discovery, worktrees, deterministic project IDs |
+| 4 | ✅ | Session and Message Lifecycle | Ordered history, run lease, recovery, transaction boundaries |
+| 5 | ✅ | Model Request Construction | Provider-independent messages, history, project system context |
+| 6 | ✅ | Real Xiaomi Streaming and Secure Credentials | HTTP/SSE streaming, hidden credential input, partial persistence, heartbeat, full vertical flow |
+| 7 | ⬜ | Session Continuation and CLI Expansion | Explicit continuation, session selection, and scoped CLI options |
+| 8 | ⬜ | Reliability, Recovery, and Provider Hardening | Additional crash recovery, compatibility, and provider edge cases |
+| 9 | ⬜ | Final Compatibility, Packaging, and Release | Baseline comparison, packaging, final documentation, and release readiness |
 
-Legend:
-
-- ✅ Completed
-- ⬜ Planned
+Later phases remain planned and are not marked complete.
 
 ---
 
-## Detailed Development Phases
+## Phase 6 Test Coverage
 
-### ✅ Phase 0 — Behavioral Baseline
+Phase 6 adds deterministic coverage for:
 
-- Document externally observable CLI behavior
-- Define the initial product scope
-- Record architectural decisions
-- Map reference behaviors to .NET components
-- Separate confirmed behavior from assumptions
-- Establish shared development and testing rules
-
-### ✅ Phase 1 — Solution and CLI Foundation
-
-- Create the .NET solution and four main projects
-- Add unit and integration test projects
-- Enforce Clean Architecture references
-- Enable nullable reference types
-- Treat warnings as errors
-- Configure Generic Host, DI, options, and logging
-- Add the `agentpulse run` command
-- Read prompts from arguments and `stdin`
-- Handle empty input and exit codes
-- Connect `Ctrl+C` to cancellation
-
-### ✅ Phase 2 — Domain and Persistence
-
-- Define Project, Session, Message, and MessagePart models
-- Add TextMessagePart as the first message-part implementation
-- Add strongly typed identifiers
-- Store UTC timestamps
-- Add deterministic message sequence ordering
-- Define session and message state transitions
-- Add Entity Framework Core and SQLite
-- Add repositories and Unit of Work
-- Add the initial migration
-- Enforce foreign keys, indexes, and uniqueness
-- Test real database transactions, commit, and rollback
-
-### ✅ Phase 3 — Project Context
-
-- Resolve absolute, relative, and empty input paths
-- Normalize paths across supported platforms
-- Validate directories and provide clear application errors
-- Detect Git availability
-- Detect repositories, roots, subdirectories, and worktrees
-- Generate deterministic project identifiers
-- Keep identifiers stable across executions
-- Distinguish independent worktrees
-- Support non-Git directories
-- Add safe async process execution
-- Support process timeout and cancellation
-- Expose platform and current UTC date through testable abstractions
-
-### ✅ Phase 4 — Session and Message Lifecycle
-
-- Get or create the current Project
-- Create a new Session
-- Continue a Session by identifier
-- Validate that a Session belongs to the current Project
-- Save the user message before provider execution
-- Create the assistant message before the first token
-- Load ordered conversation history
-- Prevent two simultaneous runs on one Session
-- Recover Sessions abandoned in the Running state
-- Define clear transaction boundaries
-
-### ✅ Phase 5 — Model Request Construction
-
-- Define provider-independent model contracts
-- Define stream events, usage, and finish reasons
-- Add the model-client abstraction
-- Build system context from Project Context
-- Convert stored history into model messages
-- Add the current user prompt exactly once
-- Define handling for failed or incomplete messages
-- Keep request construction independent from EF Core and providers
-
-### ⬜ Phase 6 — Streaming with a Fake Provider
-
-- Add a deterministic fake model client
-- Stream model events with `IAsyncEnumerable`
-- Support text deltas, completion, failure, and usage
-- Render deltas immediately in the console
-- Accumulate streamed text in the assistant message
-- Periodically save partial responses
-- Preserve partial text after cancellation or failure
-- Avoid creating a transaction for every token
-- Add end-to-end tests without external APIs
-
-### ⬜ Phase 7 — OpenAI-Compatible Provider
-
-- Implement the provider with `HttpClient`
-- Use `IHttpClientFactory`
-- Configure model, API key, and base URL
-- Support JSON and environment-based configuration
-- Parse fragmented Server-Sent Events safely
-- Support multi-line data frames and completion markers
-- Extract deltas, finish reasons, and usage
-- Convert HTTP failures into application errors
-- Stop HTTP requests on cancellation
-- Prevent secrets from appearing in logs or exceptions
-- Add contract tests with a local test server
-
-### ⬜ Phase 8 — End-to-End Vertical Flow
-
-- Resolve Project Context
-- Get or create the Project and Session
-- Acquire the Session run lock
-- Save the user message
-- Create the assistant message
-- Build the model request
-- Stream and render the response
-- Persist partial output periodically
-- Complete, cancel, or fail the assistant message
-- Release locks on every execution path
-- Add directory, model, and session CLI options
-- Add complete end-to-end tests
-
-### ⬜ Phase 9 — CLI Hardening and Compatibility
-
-- Compare final behavior with the Phase 0 baseline
-- Standardize exit codes
-- Verify `stdout` and `stderr` behavior
-- Test interactive and non-interactive execution
-- Test `stdin`, `Ctrl+C`, invalid directories, and invalid sessions
-- Test paths containing spaces
-- Test missing configuration and incomplete responses
-- Verify crash recovery
-- Add configurable logging
-- Complete local-run documentation
-- Ensure the entire solution builds without warnings
-- Ensure all automated tests pass
-
----
-
-## Beyond the Initial Roadmap
-
-Possible later expansions include:
-
-- File attachments
-- Tool contracts
-- Read, search, glob, grep, write, and edit tools
-- Shell execution
-- Permission controls
-- Agent loops
-- Snapshots and revert support
-- Conversation compaction and summaries
-- Multiple model providers
-- Model Context Protocol integration
-- Language Server Protocol integration
-- Plugins
-- Subagents and actors
-- HTTP server and SDK
-- Terminal user interface
-- Desktop and web interfaces
-
-These capabilities are intentionally outside the current initial roadmap and should only be introduced after the first 10 phases are complete and stable.
-
----
-
-## Open Source and Contributing
-
-AgentPulse is an open-source project, and community participation is welcome.
-
-Useful contributions include:
-
-- Bug reports
-- Test coverage
-- Documentation improvements
-- Cross-platform compatibility fixes
-- Architecture discussions
-- Performance improvements
-- Pull requests for the active roadmap phase
-
-Before submitting a change:
-
-1. Keep the change within the active phase or an approved issue.
-2. Preserve the existing architecture and naming conventions.
-3. Avoid unrelated refactoring.
-4. Add or update tests.
-5. Run the complete validation suite:
-
-```bash
-dotnet restore
-dotnet build --no-restore -warnaserror
-dotnet test --no-build
-```
+- Credential resolution priority, hidden input, empty input, and cancellation
+- `auth set`, `auth status`, and idempotent `auth clear`
+- Encrypted credential persistence, corruption, atomic replacement, and Unix modes
+- Prompted-key persistence after `2xx` and stored-key removal after `401`/`403`
+- SSE fragmentation, multi-byte UTF-8, LF/CRLF, comments, multi-line data, usage, finish reasons, malformed JSON, incomplete streams, repeated completion, unsupported tool calls, and ignored reasoning content
+- Local HTTP transport requests, headers, DTO shape, `401`, `403`, `429`, `500`, partial disconnects, malformed data, first-byte timeout, idle timeout, and user cancellation
+- Streaming orchestration, exact delta concatenation, flush policy, partial failure/cancellation, finalization failures, heartbeat renewal, and lost leases
+- SQLite end-to-end vertical flow proving pre-request commits, separate `Hel`/`lo` rendering, final `Hello` persistence, completed message, idle session, and released lease
+- Explicitly opt-in live Xiaomi connectivity requiring both `MIMO_API_KEY` and `AGENTPULSE_RUN_LIVE_TESTS=1`
 
 ---
 
 ## Engineering Principles
 
-- Small, reviewable development phases
-- Clear separation of responsibilities
+- Small, reviewable phases
 - Provider-independent application contracts
-- Infrastructure hidden behind abstractions
-- Deterministic persistence and ordering
+- Infrastructure behind explicit ports
+- No secrets in logs, errors, telemetry, test output, or repository files
+- No automatic retry of chargeable streaming requests
+- Exact ordered persistence of streamed text
 - UTC-only stored timestamps
-- Cancellation support for asynchronous operations
-- No secrets in logs, exceptions, or console output
+- Cancellation on all asynchronous boundaries
 - Database changes only through migrations
-- Real integration tests for critical infrastructure
-- No premature implementation of later roadmap features
+- No premature tools, plugins, agent loops, or source editing
 
 ---
 
 ## Project Status
 
 ```text
-Completed:  Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5
-Next:       Phase 6 — Streaming with a Fake Provider
-Progress:   6 / 10 phases
+Completed:  Phase 0 through Phase 6
+Next:       Phase 7 — Session Continuation and CLI Expansion
+Progress:   7 / 10 phases
 ```
+---
 
-AgentPulse is currently a strong architectural foundation rather than a finished AI assistant. The remaining phases will connect streaming, a real provider, the complete CLI workflow, and final compatibility hardening.
+## Contributing
+
+For bug reports and feature requests, please open a GitHub issue. Pull requests are welcome.
+
+For collaboration or direct coordination, contact [@Alamirpour](https://t.me/Alamirpour) on Telegram.
+
+## Maintainer
+
+AgentPulse is developed and maintained by **Pooya Alamirpour**.
+
+Found an issue or interested in contributing or collaborating? Contact me on Telegram: [@Alamirpour](https://t.me/Alamirpour)
+
+## License
+
+AgentPulse is licensed under the [MIT License](LICENSE).
+

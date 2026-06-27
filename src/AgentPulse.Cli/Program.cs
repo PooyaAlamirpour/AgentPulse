@@ -1,7 +1,7 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 
 namespace AgentPulse.Cli;
 
@@ -37,7 +37,7 @@ public static class Program
         catch (OperationCanceledException) when (cancellationSource.IsCancellationRequested)
         {
             await global::System.Console.Error.WriteLineAsync("Operation cancelled.");
-            return ExitCodes.Failure;
+            return ExitCodes.Cancelled;
         }
         catch (Exception exception)
         {

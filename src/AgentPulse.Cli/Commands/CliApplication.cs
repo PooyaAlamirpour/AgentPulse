@@ -1,6 +1,6 @@
-using Microsoft.Extensions.Options;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Console;
+using Microsoft.Extensions.Options;
 
 namespace AgentPulse.Cli.Commands;
 
@@ -8,6 +8,7 @@ public sealed class CliApplication(
     IConsole console,
     IPromptInputReader promptInputReader,
     IRunCommandHandler runCommandHandler,
+    IAuthCommandHandler authCommandHandler,
     IOptions<CliOptions> options)
 {
     private const string EmptyPromptError = "You must provide a message or a command";
@@ -24,11 +25,17 @@ public sealed class CliApplication(
             return ExitCodes.Success;
         }
 
+        if (string.Equals(arguments[0], "auth", StringComparison.Ordinal))
+        {
+            return await RunAuthAsync(arguments, cancellationToken);
+        }
+
         if (!string.Equals(arguments[0], "run", StringComparison.Ordinal))
         {
             await console.Error.WriteLineAsync(
                 $"Unknown command: {arguments[0]}".AsMemory(),
                 cancellationToken);
+            await console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
 
@@ -51,6 +58,29 @@ public sealed class CliApplication(
         return await runCommandHandler.HandleAsync(prompt, cancellationToken);
     }
 
+    private async Task<int> RunAuthAsync(
+        IReadOnlyList<string> arguments,
+        CancellationToken cancellationToken)
+    {
+        if (arguments.Count == 1 ||
+            (arguments.Count == 2 && IsHelp(arguments[1])))
+        {
+            await WriteAuthHelpAsync(cancellationToken);
+            return ExitCodes.Success;
+        }
+
+        if (arguments.Count != 2)
+        {
+            await console.Error.WriteLineAsync(
+                "Auth commands do not accept additional arguments.".AsMemory(),
+                cancellationToken);
+            await console.Error.FlushAsync(cancellationToken);
+            return ExitCodes.Failure;
+        }
+
+        return await authCommandHandler.HandleAsync(arguments[1], cancellationToken);
+    }
+
     private static bool IsHelp(string argument)
     {
         return argument is "--help" or "-h";
@@ -65,9 +95,29 @@ public sealed class CliApplication(
             Usage:
               {{applicationName}} --help
               {{applicationName}} run [message...]
+              {{applicationName}} auth set
+              {{applicationName}} auth status
+              {{applicationName}} auth clear
 
             Commands:
-              run    Receive a prompt from arguments and/or stdin.
+              run          Stream a Xiaomi MiMo response for a prompt from arguments and/or stdin.
+              auth set     Store the Xiaomi MiMo API credential securely for the current user.
+              auth status  Show whether a credential source is configured.
+              auth clear   Remove the stored credential without changing MIMO_API_KEY.
+            """;
+
+        await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);
+        await console.Out.FlushAsync(cancellationToken);
+    }
+
+    private async Task WriteAuthHelpAsync(CancellationToken cancellationToken)
+    {
+        var applicationName = options.Value.ApplicationName;
+        var help = $$"""
+            Usage:
+              {{applicationName}} auth set
+              {{applicationName}} auth status
+              {{applicationName}} auth clear
             """;
 
         await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);

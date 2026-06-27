@@ -1,20 +1,16 @@
-# پیشنهادهای معماری نیازمند تصویب
+# تصمیم‌ها و پیشنهادهای معماری
 
 ## وضعیت سند
 
-تمام موارد این سند **پیشنهاد** هستند و هنوز ADR پذیرفته‌شده یا قرارداد قطعی نسخه .NET محسوب نمی‌شوند. فاز صفر هیچ‌کدام را پیاده‌سازی نمی‌کند.
-
-هر پیشنهاد باید در فاز مقصد با تست، Trade-off و تصمیم صریح Accepted/Rejected نهایی شود.
+این سند هم پیشنهادهای باز تاریخی فاز صفر و هم تصمیم‌های پذیرفته‌شده فازهای اجراشده را نگهداری می‌کند. وضعیت هر مورد در همان بخش مشخص است. پیشنهادهای باز تا زمان ثبت Decision صریح، قرارداد قطعی محسوب نمی‌شوند؛ ADRهای دارای وضعیت `Accepted` بخشی از معماری فعلی پروژه‌اند.
 
 ---
 
 ## P-001 — نمایش Delta واقعی در Console
 
-- وضعیت: پیشنهاد ناشی از الزام برنامه مصوب
-- فاز تصمیم‌گیری: ۶؛ تأیید نهایی در ۸ و ۹
-- مسئله: مسیر فعلی Node در حالت default، TextPart را پس از `time.end` چاپ می‌کند، اما برنامه .NET نمایش فوری Delta را می‌خواهد.
-- پیشنهاد: `IChatModelClient` رویداد `TextDelta` بدهد و renderer همان Delta را بدون انتظار برای پایان Part چاپ کند.
-- نیازمند تصمیم: رفتار newline، buffering، TTY و non-TTY، و recovery هنگام قطع وسط stream.
+- وضعیت: پذیرفته‌شده در فاز ۶
+- تصمیم: `IChatModelClient` رویداد `TextDelta` می‌دهد و `IModelOutputSink` هر Delta را فوراً و بدون فاصله یا newline اضافی می‌نویسد. پایان موفق دقیقاً یک newline اضافه می‌کند.
+- پیامد: Cancellation یا Failure متن قبلاً نمایش‌داده‌شده را پاک نمی‌کند و stderr از stdout پاسخ مدل جدا می‌ماند.
 
 ## P-002 — سیاست Exit Code
 
@@ -49,11 +45,9 @@
 
 ## P-006 — cadence ذخیره پاسخ ناقص
 
-- وضعیت: پیشنهاد
-- فاز تصمیم‌گیری: ۶
-- مسئله: ذخیره هر Token هزینه Transaction زیاد دارد و ذخیره فقط در پایان recovery را ضعیف می‌کند.
-- پیشنهاد: flush بر اساس زمان یا آستانه حجم، سپس flush اجباری روی completion/failure/cancellation.
-- نیازمند تصمیم: مقادیر threshold، transaction boundary و backpressure.
+- وضعیت: پذیرفته‌شده در فاز ۶
+- تصمیم: flush بر اساس زمان یا آستانه تعداد کاراکتر انجام می‌شود و روی completion، failure و cancellation یک final flush اجباری وجود دارد. مقادیر پیش‌فرض یک ثانیه و ۲۵۶ کاراکتر هستند.
+- پیامد: تعداد Transactionها از تعداد Deltaها کمتر است و متن جزئی در مسیرهای پایان ناموفق حفظ می‌شود.
 
 ## P-007 — مدل ذخیره MessagePart قابل توسعه
 
@@ -81,9 +75,45 @@
 
 ## P-010 — تفاوت آگاهانه با SDK/Server داخلی Node
 
-- وضعیت: پیشنهاد معماری برنامه مصوب
-- فاز تصمیم‌گیری: ۱ و ۸
-- مسئله: Node CLI از SDK و Server داخلی استفاده می‌کند.
-- پیشنهاد: نسخه اولیه .NET مستقیماً `RunPrompt` را از Application اجرا کند و CLI به EF Core، HttpClient یا Git process وابسته نشود.
-- نیازمند تصمیم: مرز Composition Root و adapterهای renderer/configuration.
+- وضعیت: پذیرفته‌شده در فاز ۶
+- تصمیم: نسخه .NET مستقیماً `RunPrompt` را از Application اجرا می‌کند و از SDK یا Server داخلی Node استفاده نمی‌کند. Composition Root در CLI قرار دارد و renderer، Credential input، Persistence و HTTP transport از طریق قراردادها سیم‌کشی می‌شوند.
+- پیامد: CLI DTOهای Provider یا SQL را مدیریت نمی‌کند و Application به Console، Xiaomi یا Credential Store وابسته نیست.
 
+
+---
+
+## ADR-001 — ادغام Provider واقعی و Vertical Streaming Flow در فاز ۶
+
+### Context
+
+برنامه اولیه، Streaming آزمایشی، Provider واقعی و اتصال جریان عمودی را بین چند فاز جدا می‌کرد. پیاده‌سازی تأییدشده فاز ۶ این مرز را تغییر داد: دستور `agentpulse run` برای اثبات رفتار واقعی Cancellation، ذخیره متن جزئی، Lease heartbeat و مدیریت Credential باید به Transport واقعی OpenAI-compatible متصل می‌شد. نگه‌داشتن Fake Provider در Runtime هم رفتار امنیتی و هزینه‌ای API واقعی را پنهان می‌کرد و هم Composition Root را با مسیر موقتی ناسازگار می‌ساخت.
+
+### Decision
+
+فاز ۶ شامل Provider واقعی Xiaomi MiMo، HTTP transport سازگار با Chat Completions، SSE streaming، `RunPrompt`، periodic persistence، Lease heartbeat، فرمان‌های مدیریت Credential و جریان عمودی کامل CLI است.
+
+Runtime هیچ Fake Provider ثبت نمی‌کند. تست‌های قطعی Transport و Streaming با HTTP Test Server محلی و پاسخ‌های ازپیش‌تعریف‌شده اجرا می‌شوند؛ بنابراین تست عادی به اینترنت یا API پولی وابسته نیست.
+
+Credential در User Scope و با Data Protection ذخیره می‌شود. API Key در SQLite برنامه، `appsettings`، Repository یا argument خط فرمان ذخیره نمی‌شود. متغیر `MIMO_API_KEY` فقط برای Process جاری خوانده می‌شود و به Credential Store کپی نمی‌شود.
+
+Live Test فقط وقتی اجرا می‌شود که هم `MIMO_API_KEY` موجود باشد و هم `AGENTPULSE_RUN_LIVE_TESTS=1` به‌صورت صریح تنظیم شده باشد.
+
+### Consequences
+
+- رفتار Runtime از اولین نسخه Streaming با Provider واقعی هم‌راستا است.
+- تست‌های معمولی deterministic، آفلاین و بدون هزینه باقی می‌مانند.
+- مسئولیت‌های Application مستقل از Xiaomi و Console حفظ می‌شوند.
+- Secret handling در User Scope متمرکز است و دیتابیس مکالمات حاوی API Key نیست.
+- فازهای بعدی Provider واقعی یا Vertical Flow را دوباره پیاده‌سازی نمی‌کنند؛ آن‌ها روی ادامه Session، recovery، compatibility، packaging و release تمرکز می‌کنند.
+- Retry خودکار Streaming، Multi-provider selection، Tool Calling و Agent Loop همچنان خارج از محدوده‌اند.
+
+### Alternatives Considered
+
+- نگه‌داشتن Fake Provider در Runtime تا فاز بعدی: رد شد، چون مسیر واقعی Authentication، SSE، Timeout و Failure را اثبات نمی‌کرد.
+- وابسته‌کردن تست‌ها به API واقعی Xiaomi: رد شد، چون تست‌ها را پرهزینه، ناپایدار و نیازمند Secret می‌کرد.
+- ذخیره API Key در SQLite یا `appsettings`: رد شد، چون Secret را با داده پروژه یا فایل Configuration مخلوط می‌کرد.
+- اجرای Live Test صرفاً با وجود `MIMO_API_KEY`: رد شد، چون یک `dotnet test` عادی می‌توانست ناخواسته درخواست پولی ارسال کند.
+
+### Status
+
+Accepted

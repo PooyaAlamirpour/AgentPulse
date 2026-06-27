@@ -4,6 +4,8 @@ public sealed class SessionRunOptions
 {
     public const string SectionName = "AgentPulse:SessionRun";
 
+    public static readonly TimeSpan MinimumLeaseDuration = TimeSpan.FromSeconds(10);
+
     public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromMinutes(5);
 
     public void Validate()
@@ -11,6 +13,12 @@ public sealed class SessionRunOptions
         if (LeaseDuration <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("Session run lease duration must be positive.");
+        }
+
+        if (LeaseDuration < MinimumLeaseDuration)
+        {
+            throw new InvalidOperationException(
+                $"Session run lease duration must be at least {MinimumLeaseDuration.TotalSeconds:0} seconds.");
         }
     }
 }

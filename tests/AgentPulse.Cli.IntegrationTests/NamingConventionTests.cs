@@ -5,10 +5,13 @@ namespace AgentPulse.Cli.IntegrationTests;
 public sealed class NamingConventionTests
 {
     [Fact]
-    public void Repository_contains_no_legacy_product_name_in_paths_or_text()
+    public void Repository_contains_no_legacy_project_name_in_paths_or_text()
     {
         var repositoryRoot = FindRepositoryRoot();
-        var forbiddenName = string.Concat('m', 'i', 'm', 'o');
+        var forbiddenNames = new[]
+        {
+            string.Concat("mimo", "code"),
+        };
         var excludedDirectoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             ".git",
@@ -22,7 +25,8 @@ public sealed class NamingConventionTests
 
         var invalidPaths = entries
             .Select(path => Path.GetRelativePath(repositoryRoot, path))
-            .Where(path => path.Contains(forbiddenName, StringComparison.OrdinalIgnoreCase))
+            .Where(path => forbiddenNames.Any(name =>
+                path.Contains(name, StringComparison.OrdinalIgnoreCase)))
             .Order(StringComparer.Ordinal)
             .ToArray();
 
@@ -30,7 +34,7 @@ public sealed class NamingConventionTests
 
         var invalidFiles = entries
             .Where(File.Exists)
-            .Where(path => ContainsText(path, forbiddenName))
+            .Where(path => ContainsText(path, forbiddenNames))
             .Select(path => Path.GetRelativePath(repositoryRoot, path))
             .Order(StringComparer.Ordinal)
             .ToArray();
@@ -66,7 +70,7 @@ public sealed class NamingConventionTests
         }
     }
 
-    private static bool ContainsText(string path, string forbiddenName)
+    private static bool ContainsText(string path, IReadOnlyCollection<string> forbiddenNames)
     {
         var bytes = File.ReadAllBytes(path);
 
@@ -76,7 +80,8 @@ public sealed class NamingConventionTests
         }
 
         var text = Encoding.UTF8.GetString(bytes);
-        return text.Contains(forbiddenName, StringComparison.OrdinalIgnoreCase);
+        return forbiddenNames.Any(name =>
+            text.Contains(name, StringComparison.OrdinalIgnoreCase));
     }
 
     private static string FindRepositoryRoot()

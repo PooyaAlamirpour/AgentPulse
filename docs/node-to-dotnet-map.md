@@ -59,7 +59,7 @@ packages/opencode/src/storage/schema.ts
 ### فاز ۴ — چرخه Session و Message
 
 - Get/Create Project
-- ساخت Session یا ادامه با `--session`
+- ساخت Session جدید یا ادامه Session موجود با شناسه در سطح Application
 - اعتبارسنجی Session و Project
 - User/Assistant Message lifecycle
 - History با ترتیب قطعی
@@ -74,28 +74,28 @@ packages/opencode/src/storage/schema.ts
 - ترتیب `system → history → current user`
 - بدون Provider واقعی، Tool و Agent
 
-### فاز ۶ — Streaming با Provider آزمایشی
+### فاز ۶ — Provider واقعی Xiaomi MiMo و جریان عمودی Streaming
 
-- Fake Model Client
-- `IAsyncEnumerable<ModelStreamEvent>`
-- TextDelta/Completed/Failed/Usage
-- Console delta rendering
-- partial persistence، completion، failure و cancellation
+- Provider واقعی Xiaomi MiMo با OpenAI-compatible HTTP transport
+- `IAsyncEnumerable<ModelStreamEvent>` و SSE parser افزایشی
+- TextDelta/Completed/Usage، finish reason و timeoutهای تفکیک‌شده
+- ذخیره امن Credential در User Scope و فرمان‌های `auth`
+- Console delta rendering و periodic partial persistence
+- Lease heartbeat، completion، failure، cancellation و cleanup
+- `RunPrompt` و جریان واقعی `agentpulse run` از CLI تا Persistence
+- بدون Fake Provider در Runtime؛ تست‌های قطعی با HTTP Test Server محلی
 
-### فاز ۷ — Provider واقعی OpenAI-Compatible
+### فاز ۷ — ادامه Session و توسعه CLI
 
-- HttpClient/IHttpClientFactory
-- Configuration و Secret handling
-- SSE parser
-- delta، finish reason و usage
-- HTTP/application error normalization و timeout
+- ادامه صریح Session و انتخاب Session با گزینه CLI آینده `--session`
+- گزینه‌های CLI محدود و هماهنگ با قراردادهای موجود
+- بدون بازتعریف Provider واقعی یا Streaming فاز ۶
 
-### فاز ۸ — اتصال جریان عمودی نهایی
+### فاز ۸ — Reliability، Recovery و Provider Hardening
 
-- `RunPrompt` کوچک و orchestration کامل
-- CLI به Application بدون SDK/Server داخلی
-- `--dir`، `--model`، `--session` و stdin
-- Run lock، history، streaming، partial persistence و cleanup
+- سناریوهای بیشتر Crash Recovery و سازگاری Cross-platform
+- سخت‌سازی Provider و Persistence بدون Retry خودکار Streaming
+- حفظ جریان عمودی تکمیل‌شده فاز ۶
 
 ### فاز ۹ — سخت‌سازی CLI و آزمون سازگاری
 
@@ -163,13 +163,13 @@ Metrics/Telemetry/Control Plane
 | Recovery Session رهاشده | RunState/Status + Persistence | ۴ و ۹ | recovery service + integration test |
 | Provider-neutral request/events | `session/llm.ts` و `message-v2.ts` | ۵ | Application contracts |
 | ساخت System + History + User request | `system.ts`، `prompt.ts`، `llm.ts` | ۵ | `BuildModelRequest` |
-| Streaming آزمایشی قطعی | mock/test LLM files | ۶ | Fake `IChatModelClient` |
+| Streaming واقعی و تست قطعی | provider/LLM transport | ۶ | Xiaomi client + HTTP Test Server محلی در Tests |
 | نمایش فوری TextDelta | تفاوت آگاهانه با `run.ts` | ۶ | `IConsoleRenderer` adapter |
 | ذخیره دوره‌ای پاسخ ناقص | Processor/Part updates | ۶ | streaming persistence coordinator |
-| OpenAI-compatible HTTP | provider/config/auth files | ۷ | `OpenAiCompatibleChatModelClient` |
-| SSE parser | Provider/LLM transport | ۷ | parser مستقل و قابل تست |
-| Orchestrator نهایی | `run.ts` + prompt/processor | ۸ | `RunPrompt` |
-| CLI end-to-end واقعی | `run.ts` | ۸ | `AgentPulse.Cli` composition |
+| OpenAI-compatible HTTP و Xiaomi MiMo | provider/config/auth files | ۶ | `XiaomiChatModelClient` |
+| SSE parser | Provider/LLM transport | ۶ | parser مستقل و قابل تست |
+| Orchestrator نهایی | `run.ts` + prompt/processor | ۶ | `RunPrompt` |
+| CLI end-to-end واقعی | `run.ts` | ۶ | `AgentPulse.Cli` composition |
 | Exit Code/stdout/stderr parity | `run.ts` و `index.ts` | ۹ | Process integration tests |
 | Ctrl+C و Crash Recovery process-level | runtime + Persistence | ۹ | CLI integration tests |
 
@@ -277,21 +277,17 @@ BuildModelRequest
 ### فاز ۶
 
 ```text
+RunPrompt
+IModelOutputSink
+IStreamingRunPersistence
+IRunLeaseRenewalService
 StreamModelResponse
 CompleteAssistantMessage
 FailAssistantMessage
 CancelAssistantMessage
-IConsoleRenderer
-FakeChatModelClient در Test project
 ```
 
-### فاز ۸
-
-```text
-RunPrompt
-```
-
-`RunPrompt` فقط Orchestrator است و مسئولیت‌های Project، Session، Request building، Streaming و Persistence را به Use Caseهای کوچک واگذار می‌کند.
+`RunPrompt` Orchestrator مستقل از Console است و مسئولیت‌های Project، Session، Request building، Streaming، periodic persistence و cleanup را به قراردادها و سرویس‌های کوچک واگذار می‌کند. تست‌های Application از Test Doubleهای درون پروژه Test استفاده می‌کنند و Runtime هیچ Fake Provider ثبت نمی‌کند.
 
 ---
 
@@ -331,15 +327,20 @@ SystemClock
 Id generator implementation در صورت نیاز
 ```
 
-### فاز ۷ — Provider و SSE
+### فاز ۶ — Xiaomi Provider، SSE و Credential
 
 ```text
-OpenAiCompatibleChatModelClient
-SseParser
-Provider configuration
-HttpClient registration
-Error mapper
+XiaomiChatModelClient
+XiaomiSseParser
+XiaomiModelOptions
+IHttpClientFactory registration
+Provider error mapper
+DataProtectionProviderCredentialStore
+StreamingRunPersistence
+RunLeaseRenewalService
 ```
+
+Provider واقعی در Runtime استفاده می‌شود. تست‌های Transport و SSE فقط در پروژه Tests از HTTP Server محلی با پاسخ‌های ازپیش‌تعریف‌شده استفاده می‌کنند.
 
 ### فاز ۹ — Logging و hardening
 
@@ -365,9 +366,9 @@ stdout/stderr پایه
 
 در این فاز دیتابیس، Session، Provider و RunPrompt کامل ساخته نمی‌شوند.
 
-### فاز ۸
+### فاز ۶
 
-CLI handler ورودی validated را به `RunPrompt` می‌دهد و نتیجه/خطا را به renderer و exit-code mapping منتقل می‌کند. CLI نباید مستقیماً به DbContext، SQL، HttpClient یا Git process وابسته شود.
+CLI handler ورودی validated را به `RunPrompt` می‌دهد و نتیجه/خطا را به output sink و exit-code mapping منتقل می‌کند. فرمان‌های `auth set/status/clear` نیز در CLI قرار دارند. CLI مستقیماً SQL یا DTOهای Provider را مدیریت نمی‌کند.
 
 ### فاز ۹
 
@@ -395,12 +396,12 @@ Process واقعی CLI برای Interactive/Non-Interactive، stdin، Ctrl+C، p
 | interrupted Session recovery | Infrastructure/Application integration | ۴ و ۹ |
 | request order and no duplicate prompt | `AgentPulse.Application.Tests` | ۵ |
 | failed/cancelled history policy | `AgentPulse.Application.Tests` | ۵ |
-| Hel + lo → Hello | Application end-to-end with Fake Provider | ۶ |
+| Hel + lo → Hello | Application orchestration + HTTP Test Server محلی | ۶ |
 | cancellation keeps partial text | Application end-to-end | ۶ |
 | stream failure keeps partial text | Application end-to-end | ۶ |
-| fragmented/multiline SSE and `[DONE]` | `AgentPulse.Infrastructure.Tests` | ۷ |
-| HTTP cancellation and secret redaction | `AgentPulse.Infrastructure.Tests` | ۷ |
-| full RunPrompt flow | end-to-end with Fake Provider | ۸ |
+| fragmented/multiline SSE and `[DONE]` | `AgentPulse.Infrastructure.Tests` | ۶ |
+| HTTP cancellation and secret redaction | `AgentPulse.Infrastructure.Tests` | ۶ |
+| full RunPrompt flow | SQLite + HTTP Test Server end-to-end | ۶ |
 | real CLI process, stdout/stderr/exit codes | `AgentPulse.Cli.IntegrationTests` | ۹ |
 | Ctrl+C and crash recovery | `AgentPulse.Cli.IntegrationTests` | ۹ |
 
@@ -428,16 +429,18 @@ Process واقعی CLI برای Interactive/Non-Interactive، stdin، Ctrl+C، p
 
 - flush دوره‌ای متن ناقص
 - completion/failure/cancellation transition
+- orchestration ترتیب مراحل و cleanup همه مسیرها
+- تمدید Lease در Scope مستقل
 
 ### فاز ۸
 
-- orchestration ترتیب مراحل و cleanup همه مسیرها
+- سخت‌سازی بیشتر recovery و compatibility بدون تغییر مرزهای Transaction تثبیت‌شده فاز ۶
 
 ### فاز ۹
 
 - اثبات recovery پس از قطع واقعی Process
 
-cadence دقیق flush، نوع Lock و atomicity هر مجموعه عملیات هنوز تصمیم معماری تأییدنشده‌اند.
+cadence پیش‌فرض flush، Lease پایدار SQLite و atomicity مسیرهای نهایی در فازهای ۴ و ۶ پیاده‌سازی و با تست‌های Integration تثبیت شده‌اند.
 
 ---
 
@@ -445,7 +448,7 @@ cadence دقیق flush، نوع Lock و atomicity هر مجموعه عملیات
 
 - Node `run` در حالت default، TextPart کامل‌شده را چاپ می‌کند؛ برنامه مصوب .NET نمایش فوری Delta را الزام می‌کند.
 - Node از SDK و Server داخلی استفاده می‌کند؛ نسخه اولیه .NET مستقیماً Application Use Case را صدا می‌زند.
-- Node Optionهای بسیار بیشتری دارد؛ نسخه اولیه فقط `--dir`، `--model` و `--session` را همراه Prompt/stdin پوشش می‌دهد.
+- Node Optionهای بسیار بیشتری دارد؛ فاز ۶ Prompt از Argument/stdin را پوشش می‌دهد و گزینه‌های محدود `--dir`، `--model` و `--session` برای توسعه CLI فاز ۷ باقی مانده‌اند.
 - `--continue`، `--format json` و JSON Event Format عمداً خارج از Scope‌اند.
 - Exit Code نهایی Provider error و Ctrl+C باید در فاز ۹ تعیین تکلیف شود و در فاز صفر قطعی نیست.
 

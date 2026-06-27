@@ -5,33 +5,58 @@ namespace AgentPulse.Cli.IntegrationTests;
 public sealed class CliProcessTests
 {
     [Fact]
-    public async Task Help_runs_successfully()
+    public async Task Help_runs_successfully_without_requesting_a_credential()
     {
         var result = await RunCliAsync(["--help"], standardInput: null);
 
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Usage:", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("agentpulse run [message...]", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Non_interactive_run_without_key_fails_with_clear_instructions()
+    {
+        var result = await RunCliAsync(
+            ["run", "hello"],
+            standardInput: string.Empty,
+            environment: new Dictionary<string, string?>
+            {
+                ["MIMO_API_KEY"] = null,
+            });
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Run_receives_prompt_from_arguments_and_streams_only_model_text_to_stdout()
+    {
+        await using var server = CliLocalModelServer.StartSuccessful();
+        var result = await RunCliAsync(
+            ["run", "hello"],
+            standardInput: string.Empty,
+            environment: CreateRunEnvironment(server.BaseUrl));
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal("Hello" + Environment.NewLine, result.StandardOutput);
         Assert.Equal(string.Empty, result.StandardError);
     }
 
     [Fact]
-    public async Task Run_receives_prompt_from_arguments_and_keeps_stderr_empty()
+    public async Task Run_receives_prompt_from_redirected_stdin_when_environment_key_exists()
     {
-        var result = await RunCliAsync(["run", "hello"], standardInput: string.Empty);
+        await using var server = CliLocalModelServer.StartSuccessful();
+        var result = await RunCliAsync(
+            ["run"],
+            standardInput: "hello from pipe",
+            environment: CreateRunEnvironment(server.BaseUrl));
 
         Assert.Equal(0, result.ExitCode);
-        Assert.Equal("hello", result.StandardOutput.Trim());
-        Assert.Equal(string.Empty, result.StandardError);
-    }
-
-    [Fact]
-    public async Task Run_receives_prompt_from_redirected_stdin()
-    {
-        var result = await RunCliAsync(["run"], standardInput: "hello from pipe");
-
-        Assert.Equal(0, result.ExitCode);
-        Assert.Equal("hello from pipe", result.StandardOutput.Trim());
+        Assert.Equal("Hello" + Environment.NewLine, result.StandardOutput);
         Assert.Equal(string.Empty, result.StandardError);
     }
 
@@ -48,7 +73,6 @@ public sealed class CliProcessTests
             StringComparison.Ordinal);
     }
 
-
     [Fact]
     public async Task Ctrl_c_cancels_a_running_cli_process_cleanly()
     {
@@ -57,7 +81,9 @@ public sealed class CliProcessTests
             return;
         }
 
-        using var process = StartCliProcessWithDefaultInterruptDisposition();
+        await using var server = CliLocalModelServer.StartHanging();
+        using var process = StartCliProcessWithDefaultInterruptDisposition(
+            server.BaseUrl);
         var standardOutputTask = process.StandardOutput.ReadToEndAsync();
         var standardErrorTask = process.StandardError.ReadToEndAsync();
 
@@ -79,19 +105,36 @@ public sealed class CliProcessTests
             }
         }
 
-        var combinedOutput = string.Concat(
-            await standardOutputTask,
-            await standardErrorTask);
+        Assert.Equal(130, process.ExitCode);
+        Assert.Equal(string.Empty, await standardOutputTask);
+        Assert.Contains(
+            "Operation cancelled.",
+            await standardErrorTask,
+            StringComparison.Ordinal);
+    }
 
-        Assert.NotEqual(0, process.ExitCode);
-        Assert.Contains("Operation cancelled.", combinedOutput, StringComparison.Ordinal);
+    private static Dictionary<string, string?> CreateRunEnvironment(string baseUrl)
+    {
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "AgentPulse.CliTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        return new Dictionary<string, string?>
+        {
+            ["MIMO_API_KEY"] = "process-test-secret",
+            ["AgentPulse__Xiaomi__BaseUrl"] = baseUrl,
+            ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
+            ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "security"),
+        };
     }
 
     private static async Task<ProcessResult> RunCliAsync(
         IReadOnlyList<string> arguments,
-        string? standardInput)
+        string? standardInput,
+        IReadOnlyDictionary<string, string?>? environment = null)
     {
-        using var process = StartCliProcess(arguments);
+        using var process = StartCliProcess(arguments, environment);
 
         if (standardInput is not null)
         {
@@ -111,8 +154,9 @@ public sealed class CliProcessTests
             await standardErrorTask);
     }
 
-
-    private static Process StartCliProcess(IReadOnlyList<string> arguments)
+    private static Process StartCliProcess(
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string?>? environment = null)
     {
         var cliAssemblyPath = FindCliAssemblyPath();
         var dotnetHostPath = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -127,8 +171,8 @@ public sealed class CliProcessTests
             CreateNoWindow = true,
         };
 
-        startInfo.Environment["DOTNET_NOLOGO"] = "1";
-        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        ApplyBaseEnvironment(startInfo);
+        ApplyEnvironment(startInfo, environment);
         startInfo.ArgumentList.Add(cliAssemblyPath);
 
         foreach (var argument in arguments)
@@ -141,7 +185,7 @@ public sealed class CliProcessTests
         return process;
     }
 
-    private static Process StartCliProcessWithDefaultInterruptDisposition()
+    private static Process StartCliProcessWithDefaultInterruptDisposition(string baseUrl)
     {
         var cliAssemblyPath = FindCliAssemblyPath();
         var dotnetHostPath = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
@@ -150,7 +194,8 @@ public sealed class CliProcessTests
             "trap - INT; exec",
             ShellQuote(dotnetHostPath),
             ShellQuote(cliAssemblyPath),
-            "run");
+            "run",
+            ShellQuote("hello"));
 
         var startInfo = new ProcessStartInfo
         {
@@ -161,14 +206,42 @@ public sealed class CliProcessTests
             RedirectStandardInput = true,
             CreateNoWindow = true,
         };
-        startInfo.Environment["DOTNET_NOLOGO"] = "1";
-        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+        ApplyBaseEnvironment(startInfo);
+        ApplyEnvironment(startInfo, CreateRunEnvironment(baseUrl));
         startInfo.ArgumentList.Add("-c");
         startInfo.ArgumentList.Add(command);
 
         var process = new Process { StartInfo = startInfo };
         Assert.True(process.Start(), "The CLI process could not be started.");
         return process;
+    }
+
+    private static void ApplyBaseEnvironment(ProcessStartInfo startInfo)
+    {
+        startInfo.Environment["DOTNET_NOLOGO"] = "1";
+        startInfo.Environment["DOTNET_CLI_TELEMETRY_OPTOUT"] = "1";
+    }
+
+    private static void ApplyEnvironment(
+        ProcessStartInfo startInfo,
+        IReadOnlyDictionary<string, string?>? environment)
+    {
+        if (environment is null)
+        {
+            return;
+        }
+
+        foreach (var item in environment)
+        {
+            if (item.Value is null)
+            {
+                startInfo.Environment.Remove(item.Key);
+            }
+            else
+            {
+                startInfo.Environment[item.Key] = item.Value;
+            }
+        }
     }
 
     private static async Task WaitForCliProcessImageAsync(int processId)

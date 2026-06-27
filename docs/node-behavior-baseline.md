@@ -113,7 +113,7 @@ packages/opencode/src/cli/cmd/run.ts:213-290
 
 ### 4.3 Optionهای نسخه اولیه .NET مطابق برنامه مصوب
 
-در برنامه مصوب فازهای ۰ تا ۹ فقط این ورودی‌ها برای جریان نهایی فاز ۸ در Scope هستند:
+در برنامه اولیه فازهای ۰ تا ۹ این ورودی‌ها برای CLI نهایی در Scope تعریف شده بودند. جریان واقعی `agentpulse run` در فاز ۶ تکمیل شده است؛ گزینه‌های صریح `--dir`، `--model` و `--session` برای توسعه CLI در فاز ۷ باقی مانده‌اند:
 
 ```text
 agentpulse run "prompt"
@@ -543,7 +543,7 @@ TextMessagePart
 SQLite و EF Core
 Conversation History
 Model Request مستقل از Provider
-Fake Provider برای تست Streaming
+HTTP Test Server محلی برای تست قطعی Streaming
 یک Provider واقعی OpenAI-compatible
 SSE parsing
 Streaming متن روی Console
