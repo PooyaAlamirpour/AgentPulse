@@ -30,6 +30,51 @@ public sealed class PromptInputReaderTests
         Assert.Equal("  خط اول\r\nsecond  line", prompt);
     }
 
+    [Theory]
+    [InlineData(
+        "\uFEFFsecond line one\nsecond line two ✓ فارسی",
+        "second line one\nsecond line two ✓ فارسی")]
+    [InlineData("\uFEFF", "")]
+    [InlineData("\uFEFF\r\n", "")]
+    [InlineData("\uFEFF\uFEFFhello", "\uFEFFhello")]
+    public async Task Redirected_stdin_removes_one_leading_bom_before_trimming_final_line_endings(
+        string input,
+        string expected)
+    {
+        var reader = new PromptInputReader(
+            new TestConsole(input, isInputRedirected: true));
+
+        var prompt = await reader.ReadAsync(null, CancellationToken.None);
+
+        Assert.Equal(expected, prompt);
+    }
+
+    [Fact]
+    public async Task Redirected_stdin_preserves_bom_inside_prompt()
+    {
+        var reader = new PromptInputReader(
+            new TestConsole("hello\uFEFFworld", isInputRedirected: true));
+
+        var prompt = await reader.ReadAsync(null, CancellationToken.None);
+
+        Assert.Equal("hello\uFEFFworld", prompt);
+    }
+
+    [Fact]
+    public async Task Positional_prompt_preserves_leading_bom()
+    {
+        var reader = new PromptInputReader(
+            new TestConsole(
+                new ThrowingTextReader(),
+                isInputRedirected: true));
+
+        var prompt = await reader.ReadAsync(
+            "\uFEFFhello",
+            CancellationToken.None);
+
+        Assert.Equal("\uFEFFhello", prompt);
+    }
+
     [Fact]
     public async Task Missing_positional_prompt_and_non_redirected_stdin_returns_null()
     {

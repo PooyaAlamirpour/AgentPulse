@@ -165,13 +165,16 @@ public sealed class RunPrompt(
             CancellationTokenSource? flushDelayCancellation = null;
             Task? flushDelayTask = null;
 
-            await using var streamEnumerator = chatModelClient
+            var streamEnumerator = chatModelClient
                 .StreamAsync(modelRequest, activeStreamCancellation.Token)
                 .GetAsyncEnumerator(activeStreamCancellation.Token);
-            var moveNextTask = streamEnumerator.MoveNextAsync().AsTask();
+            Task<bool>? moveNextTask = null;
+            Exception? streamException = null;
 
             try
             {
+                moveNextTask = streamEnumerator.MoveNextAsync().AsTask();
+
                 while (true)
                 {
                     ThrowIfHeartbeatFailed(activeHeartbeatState);
@@ -217,7 +220,11 @@ public sealed class RunPrompt(
                         }
                     }
 
-                    if (!await moveNextTask)
+                    var completedMoveNextTask = moveNextTask ?? throw new InvalidOperationException(
+                        "The model stream did not have an active move operation.");
+                    moveNextTask = null;
+
+                    if (!await completedMoveNextTask)
                     {
                         break;
                     }
@@ -289,14 +296,38 @@ public sealed class RunPrompt(
                     moveNextTask = streamEnumerator.MoveNextAsync().AsTask();
                 }
             }
+            catch (Exception exception)
+            {
+                streamException = exception;
+            }
             finally
             {
-                if (flushDelayTask is not null)
+                try
                 {
-                    flushDelayCancellation!.Cancel();
-                    await ObserveExpectedCancellationAsync(flushDelayTask);
-                    flushDelayCancellation.Dispose();
+                    if (flushDelayTask is not null)
+                    {
+                        flushDelayCancellation!.Cancel();
+                        await ObserveExpectedCancellationAsync(flushDelayTask);
+                        flushDelayCancellation.Dispose();
+                    }
                 }
+                catch (Exception exception)
+                {
+                    streamException = CombineStreamCleanupFailure(
+                        streamException,
+                        exception);
+                }
+
+                streamException = await StopAndDisposeStreamAsync(
+                    streamEnumerator,
+                    moveNextTask,
+                    activeStreamCancellation,
+                    streamException);
+            }
+
+            if (streamException is not null)
+            {
+                ExceptionDispatchInfo.Capture(streamException).Throw();
             }
 
             ThrowIfHeartbeatFailed(activeHeartbeatState);
@@ -671,6 +702,60 @@ public sealed class RunPrompt(
         catch (OperationCanceledException)
         {
         }
+    }
+
+    private static async Task<Exception?> StopAndDisposeStreamAsync(
+        IAsyncEnumerator<ModelStreamEvent> streamEnumerator,
+        Task<bool>? activeMoveNextTask,
+        CancellationTokenSource streamCancellation,
+        Exception? pendingException)
+    {
+        if (activeMoveNextTask is { IsCompleted: false })
+        {
+            streamCancellation.Cancel();
+        }
+
+        if (activeMoveNextTask is not null)
+        {
+            try
+            {
+                await activeMoveNextTask;
+            }
+            catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception)
+            {
+                pendingException = CombineStreamCleanupFailure(
+                    pendingException,
+                    exception);
+            }
+        }
+
+        try
+        {
+            await streamEnumerator.DisposeAsync();
+        }
+        catch (OperationCanceledException) when (streamCancellation.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            pendingException = CombineStreamCleanupFailure(
+                pendingException,
+                exception);
+        }
+
+        return pendingException;
+    }
+
+    private static Exception CombineStreamCleanupFailure(
+        Exception? primaryException,
+        Exception cleanupException)
+    {
+        return primaryException is null
+            ? cleanupException
+            : new AggregateException(primaryException, cleanupException);
     }
 
     private async Task<Exception?> TryFinalizeCancellationAsync(

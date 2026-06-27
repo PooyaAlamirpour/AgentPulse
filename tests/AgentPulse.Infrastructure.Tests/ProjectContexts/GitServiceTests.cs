@@ -66,18 +66,26 @@ public sealed class GitServiceTests
     [Fact]
     public async Task Linked_worktree_keeps_working_tree_and_common_repository_separate()
     {
+        var workspaceRoot = Path.Combine(
+            Path.GetPathRoot(Environment.CurrentDirectory)!,
+            "workspace");
+        var featureRoot = Path.GetFullPath(Path.Combine(workspaceRoot, "feature"));
+        var mainGitDirectory = Path.GetFullPath(
+            Path.Combine(workspaceRoot, "main", ".git"));
+        var linkedGitDirectory = Path.GetFullPath(
+            Path.Combine(mainGitDirectory, "worktrees", "feature"));
         var processRunner = new StubProcessRunner();
         processRunner.Results.Enqueue(new ProcessResult(0, "true\n", string.Empty));
-        processRunner.Results.Enqueue(new ProcessResult(0, "/workspace/feature\n", string.Empty));
-        processRunner.Results.Enqueue(new ProcessResult(0, "/workspace/main/.git/worktrees/feature\n", string.Empty));
-        processRunner.Results.Enqueue(new ProcessResult(0, "/workspace/main/.git\n", string.Empty));
+        processRunner.Results.Enqueue(new ProcessResult(0, featureRoot + "\n", string.Empty));
+        processRunner.Results.Enqueue(new ProcessResult(0, linkedGitDirectory + "\n", string.Empty));
+        processRunner.Results.Enqueue(new ProcessResult(0, mainGitDirectory + "\n", string.Empty));
         var service = new GitService(processRunner);
 
-        var repository = await service.DiscoverAsync("/workspace/feature/src");
+        var repository = await service.DiscoverAsync(Path.Combine(featureRoot, "src"));
 
         var info = Assert.IsType<AgentPulse.Application.ProjectContexts.GitRepositoryInfo>(repository);
-        Assert.Equal("/workspace/feature", info.WorkingTreeRoot);
-        Assert.Equal("/workspace/main/.git", info.CommonGitDirectory);
+        Assert.Equal(featureRoot, info.WorkingTreeRoot, PathComparer.Instance);
+        Assert.Equal(mainGitDirectory, info.CommonGitDirectory, PathComparer.Instance);
         Assert.True(info.IsLinkedWorktree);
     }
 
@@ -118,6 +126,28 @@ public sealed class GitServiceTests
             }
 
             return Task.FromResult(Results.Dequeue());
+        }
+    }
+
+    private sealed class PathComparer : IEqualityComparer<string>
+    {
+        public static PathComparer Instance { get; } = new();
+
+        public bool Equals(string? left, string? right)
+        {
+            return string.Equals(
+                left,
+                right,
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal);
+        }
+
+        public int GetHashCode(string value)
+        {
+            return OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase.GetHashCode(value)
+                : StringComparer.Ordinal.GetHashCode(value);
         }
     }
 }

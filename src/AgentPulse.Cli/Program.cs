@@ -2,6 +2,7 @@ using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using System.Text;
 
 namespace AgentPulse.Cli;
 
@@ -9,6 +10,7 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        ConfigureConsoleEncoding();
         using var cancellationSource = new CancellationTokenSource();
 
         ConsoleCancelEventHandler cancelHandler = (_, eventArgs) =>
@@ -48,5 +50,12 @@ public static class Program
         {
             global::System.Console.CancelKeyPress -= cancelHandler;
         }
+    }
+
+    private static void ConfigureConsoleEncoding()
+    {
+        var utf8 = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+        global::System.Console.InputEncoding = utf8;
+        global::System.Console.OutputEncoding = utf8;
     }
 }

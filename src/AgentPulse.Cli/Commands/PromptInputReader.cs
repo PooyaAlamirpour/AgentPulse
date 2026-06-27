@@ -19,6 +19,12 @@ public sealed class PromptInputReader(IConsole console) : IPromptInputReader
         }
 
         var prompt = await console.In.ReadToEndAsync(cancellationToken);
+
+        if (prompt.Length > 0 && prompt[0] == '\uFEFF')
+        {
+            prompt = prompt[1..];
+        }
+
         return prompt.TrimEnd('\r', '\n');
     }
 }

@@ -46,7 +46,10 @@ public sealed class RuntimeDatabasePathTests
             var factory = serviceProvider.GetRequiredService<IDbContextFactory<AgentPulseDbContext>>();
             await using var context = await factory.CreateDbContextAsync();
             Assert.Empty(await context.Database.GetPendingMigrationsAsync());
-            Assert.Equal(2, (await context.Database.GetAppliedMigrationsAsync()).Count());
+            var appliedMigrations = await context.Database.GetAppliedMigrationsAsync();
+            Assert.Contains("20260627120000_InitialDomainPersistence", appliedMigrations);
+            Assert.Contains("20260627150000_AddSessionRunLifecycle", appliedMigrations);
+            Assert.Contains("20260627200000_AddRunMessageMetadata", appliedMigrations);
 
             var connectionString = context.Database.GetConnectionString();
             Assert.NotNull(connectionString);

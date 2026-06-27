@@ -9,6 +9,7 @@ public sealed class RepositoryHygieneTests
         ".db-wal",
         ".sqlite",
         ".sqlite3",
+        ".trx",
     ];
 
     [Fact]

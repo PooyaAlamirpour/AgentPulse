@@ -50,6 +50,28 @@ public sealed class GitProjectContextIntegrationTests
     }
 
     [GitFact]
+    public async Task Temporary_linked_worktree_cleanup_removes_repository_and_worktree()
+    {
+        var repository = await TemporaryGitRepository.CreateAsync();
+        var rootPath = repository.RootPath;
+        var worktreePath = Path.Combine(rootPath, "cleanup-worktree");
+
+        try
+        {
+            await repository.RunGitAsync(
+                ["worktree", "add", "-b", "cleanup-worktree", worktreePath]);
+            Assert.True(Directory.Exists(worktreePath));
+        }
+        finally
+        {
+            await repository.DisposeAsync();
+        }
+
+        Assert.False(Directory.Exists(worktreePath));
+        Assert.False(Directory.Exists(rootPath));
+    }
+
+    [GitFact]
     public async Task Non_git_directory_is_returned_as_non_git_when_rev_parse_exits_nonzero()
     {
         var root = CreateTemporaryDirectory();
@@ -93,7 +115,10 @@ public sealed class GitProjectContextIntegrationTests
 
     private sealed class TemporaryGitRepository : IAsyncDisposable
     {
+        private const int DeleteAttemptCount = 5;
+        private static readonly TimeSpan DeleteRetryDelay = TimeSpan.FromMilliseconds(75);
         private readonly SystemProcessRunner _processRunner = new();
+        private readonly List<string> _linkedWorktreePaths = [];
 
         private TemporaryGitRepository(string rootPath, string repositoryPath)
         {
@@ -138,16 +163,128 @@ public sealed class GitProjectContextIntegrationTests
             Assert.True(
                 result.ExitCode == 0,
                 $"Git command failed: git {string.Join(" ", arguments)}{Environment.NewLine}{result.StandardError}");
+
+            if (arguments.Count >= 3 &&
+                string.Equals(arguments[0], "worktree", StringComparison.Ordinal) &&
+                string.Equals(arguments[1], "add", StringComparison.Ordinal))
+            {
+                _linkedWorktreePaths.Add(Path.GetFullPath(arguments[^1], RepositoryPath));
+            }
         }
 
-        public ValueTask DisposeAsync()
+        public async ValueTask DisposeAsync()
         {
-            if (Directory.Exists(RootPath))
+            Exception? gitCleanupFailure = null;
+
+            if (Directory.Exists(RepositoryPath))
             {
-                Directory.Delete(RootPath, recursive: true);
+                foreach (var worktreePath in _linkedWorktreePaths
+                             .Distinct(GetPathComparer())
+                             .Reverse())
+                {
+                    try
+                    {
+                        var result = await _processRunner.RunAsync(
+                            new ProcessRequest(
+                                "git",
+                                ["worktree", "remove", "--force", worktreePath],
+                                RepositoryPath,
+                                TimeSpan.FromSeconds(15)));
+                        if (result.ExitCode != 0)
+                        {
+                            gitCleanupFailure = new InvalidOperationException(
+                                $"Git could not remove temporary worktree '{Path.GetFileName(worktreePath)}'.");
+                        }
+                    }
+                    catch (Exception exception)
+                    {
+                        gitCleanupFailure = exception;
+                    }
+                }
+
+                try
+                {
+                    await _processRunner.RunAsync(
+                        new ProcessRequest(
+                            "git",
+                            ["worktree", "prune"],
+                            RepositoryPath,
+                            TimeSpan.FromSeconds(15)));
+                }
+                catch (Exception exception)
+                {
+                    gitCleanupFailure ??= exception;
+                }
             }
 
-            return ValueTask.CompletedTask;
+            for (var attempt = 1; attempt <= DeleteAttemptCount; attempt++)
+            {
+                if (!Directory.Exists(RootPath))
+                {
+                    return;
+                }
+
+                NormalizeAttributes(RootPath);
+
+                try
+                {
+                    Directory.Delete(RootPath, recursive: true);
+                    return;
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException)
+                {
+                    if (attempt == DeleteAttemptCount)
+                    {
+                        throw new IOException(
+                            "The temporary Git repository could not be removed after bounded retries.",
+                            gitCleanupFailure is null
+                                ? exception
+                                : new AggregateException(gitCleanupFailure, exception));
+                    }
+
+                    await Task.Delay(DeleteRetryDelay);
+                }
+            }
+        }
+
+        private static void NormalizeAttributes(string rootPath)
+        {
+            IEnumerable<string> paths;
+
+            try
+            {
+                paths = Directory
+                    .EnumerateFileSystemEntries(rootPath, "*", SearchOption.AllDirectories)
+                    .Prepend(rootPath)
+                    .ToArray();
+            }
+            catch (Exception exception) when (
+                exception is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+            {
+                return;
+            }
+
+            foreach (var path in paths)
+            {
+                try
+                {
+                    File.SetAttributes(path, FileAttributes.Normal);
+                }
+                catch (Exception exception) when (
+                    exception is IOException or UnauthorizedAccessException or FileNotFoundException or
+                        DirectoryNotFoundException)
+                {
+                    // A concurrent delete attempt may already have removed this entry.
+                }
+            }
+        }
+
+        private static StringComparer GetPathComparer()
+        {
+            return OperatingSystem.IsWindows()
+                ? StringComparer.OrdinalIgnoreCase
+                : StringComparer.Ordinal;
         }
     }
 }

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
@@ -6,6 +7,9 @@ namespace AgentPulse.Cli.IntegrationTests;
 
 public sealed class CliProcessTests
 {
+    private static readonly Encoding Utf8WithoutBom =
+        new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
+
     [Fact]
     public async Task Help_runs_successfully_without_requesting_a_credential()
     {
@@ -44,18 +48,42 @@ public sealed class CliProcessTests
     [Fact]
     public async Task Non_interactive_run_without_key_fails_with_clear_instructions()
     {
-        var result = await RunCliAsync(
-            ["run", "hello"],
-            standardInput: string.Empty,
-            environment: new Dictionary<string, string?>
-            {
-                ["MIMO_API_KEY"] = null,
-            });
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "AgentPulse Missing Credential Tests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
 
-        Assert.NotEqual(0, result.ExitCode);
-        Assert.Equal(string.Empty, result.StandardOutput);
-        Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
-        Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
+        try
+        {
+            await using var server = CliLocalModelServer.StartSuccessful();
+            var environment = CreateRunEnvironment(server.BaseUrl, root);
+            environment["AgentPulse__Model__ApiKeyEnvironmentVariable"] = "MIMO_API_KEY";
+            environment["MIMO_API_KEY"] = null;
+            environment["HOME"] = Path.Combine(root, "home");
+            environment["USERPROFILE"] = Path.Combine(root, "profile");
+            environment["LOCALAPPDATA"] = Path.Combine(root, "local-app-data");
+            environment["XDG_DATA_HOME"] = Path.Combine(root, "xdg-data");
+
+            var result = await RunCliAsync(
+                ["run", "hello"],
+                standardInput: string.Empty,
+                environment: environment);
+
+            Assert.NotEqual(0, result.ExitCode);
+            Assert.Equal(string.Empty, result.StandardOutput);
+            Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
+            Assert.Empty(server.RequestBodies);
+        }
+        finally
+        {
+            SqliteConnection.ClearAllPools();
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
     }
 
     [Fact]
@@ -100,6 +128,27 @@ public sealed class CliProcessTests
         Assert.DoesNotContain("Session ID:", result.StandardError, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("\uFEFF")]
+    [InlineData("\uFEFF\r\n")]
+    public async Task Bom_only_prompt_is_rejected_before_provider_execution(string standardInput)
+    {
+        await using var server = CliLocalModelServer.StartSuccessful();
+        var result = await RunCliAsync(
+            ["run"],
+            standardInput,
+            CreateRunEnvironment(server.BaseUrl));
+
+        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Contains(
+            "A prompt is required as an argument or redirected standard input.",
+            result.StandardError,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("Session ID:", result.StandardError, StringComparison.Ordinal);
+        Assert.Empty(server.RequestBodies);
+    }
+
     [Fact]
     public async Task Run_options_are_wired_end_to_end_with_git_root_history_and_stderr_metadata()
     {
@@ -136,7 +185,7 @@ public sealed class CliProcessTests
             Assert.Equal("Hello" + Environment.NewLine, first.StandardOutput);
             var sessionId = ParseSessionId(first.StandardError);
 
-            const string multilinePrompt = "second line one\nsecond line two ✓";
+            const string multilinePrompt = "second line one\nsecond line two ✓ فارسی";
             var second = await RunCliAsync(
                 [
                     "run",
@@ -145,7 +194,7 @@ public sealed class CliProcessTests
                     "--session",
                     sessionId.ToString("D"),
                 ],
-                standardInput: multilinePrompt + Environment.NewLine,
+                standardInput: "\uFEFF" + multilinePrompt + Environment.NewLine,
                 environment: environment);
 
             Assert.Equal(0, second.ExitCode);
@@ -172,31 +221,67 @@ public sealed class CliProcessTests
                     .EnumerateArray()
                     .Select(message => message.GetProperty("role").GetString()));
 
-            await using var connection = new SqliteConnection($"Data Source={databasePath}");
-            await connection.OpenAsync();
-            await using var command = connection.CreateCommand();
-            command.CommandText =
-                "SELECT NormalizedRootPath, IsGitRepository, GitWorktree, " +
-                "(SELECT COUNT(*) FROM Projects), (SELECT COUNT(*) FROM Sessions) " +
-                "FROM Projects;";
-            await using var reader = await command.ExecuteReaderAsync();
-            Assert.True(await reader.ReadAsync());
-            var canonicalRoot = Path.TrimEndingDirectorySeparator(
-                Path.GetFullPath(repositoryPath));
-            Assert.Equal(canonicalRoot, reader.GetString(0));
-            Assert.True(reader.GetBoolean(1));
-            Assert.Equal(canonicalRoot, reader.GetString(2));
-            Assert.Equal(1, reader.GetInt32(3));
-            Assert.Equal(1, reader.GetInt32(4));
-            Assert.False(await reader.ReadAsync());
+            var connectionString = new SqliteConnectionStringBuilder
+            {
+                DataSource = databasePath,
+                Pooling = false,
+            }.ToString();
+            await using (var connection = new SqliteConnection(connectionString))
+            {
+                await connection.OpenAsync();
+
+                await using var command = connection.CreateCommand();
+                command.CommandText =
+                    "SELECT NormalizedRootPath, IsGitRepository, GitWorktree, " +
+                    "(SELECT COUNT(*) FROM Projects), (SELECT COUNT(*) FROM Sessions), " +
+                    "(SELECT p.Text FROM MessageParts p " +
+                    "JOIN Messages m ON m.Id = p.MessageId " +
+                    "WHERE m.Role = 'User' ORDER BY m.Sequence DESC LIMIT 1) " +
+                    "FROM Projects;";
+                await using var reader = await command.ExecuteReaderAsync();
+                Assert.True(await reader.ReadAsync());
+                var canonicalRoot = Path.TrimEndingDirectorySeparator(
+                    Path.GetFullPath(repositoryPath));
+                Assert.Equal(canonicalRoot, reader.GetString(0));
+                Assert.True(reader.GetBoolean(1));
+                Assert.Equal(canonicalRoot, reader.GetString(2));
+                Assert.Equal(1, reader.GetInt32(3));
+                Assert.Equal(1, reader.GetInt32(4));
+                Assert.Equal(multilinePrompt, reader.GetString(5));
+                Assert.False(await reader.ReadAsync());
+            }
         }
         finally
         {
-            if (Directory.Exists(root))
+            SqliteConnection.ClearAllPools();
+            await DeleteDirectoryWithRetryAsync(root);
+        }
+    }
+
+    private static async Task DeleteDirectoryWithRetryAsync(string path)
+    {
+        const int attempts = 5;
+
+        for (var attempt = 1; attempt <= attempts; attempt++)
+        {
+            try
             {
-                Directory.Delete(root, recursive: true);
+                if (Directory.Exists(path))
+                {
+                    Directory.Delete(path, recursive: true);
+                }
+
+                return;
+            }
+            catch (Exception exception)
+                when (attempt < attempts &&
+                    exception is IOException or UnauthorizedAccessException)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100 * attempt));
             }
         }
+
+        Directory.Delete(path, recursive: true);
     }
 
     [Fact]
@@ -336,6 +421,9 @@ public sealed class CliProcessTests
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
+            StandardInputEncoding = Utf8WithoutBom,
+            StandardOutputEncoding = Utf8WithoutBom,
+            StandardErrorEncoding = Utf8WithoutBom,
             CreateNoWindow = true,
         };
 
@@ -372,6 +460,9 @@ public sealed class CliProcessTests
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             RedirectStandardInput = true,
+            StandardInputEncoding = Utf8WithoutBom,
+            StandardOutputEncoding = Utf8WithoutBom,
+            StandardErrorEncoding = Utf8WithoutBom,
             CreateNoWindow = true,
         };
         ApplyBaseEnvironment(startInfo);
