@@ -250,7 +250,7 @@ PowerShell example:
 | 1 | ✅ | Solution and CLI Foundation | Solution structure, Generic Host, DI, CLI input, `stdin`, cancellation |
 | 2 | ✅ | Domain and Persistence | Domain entities, SQLite, EF Core, migrations, repositories, transactions |
 | 3 | ✅ | Project Context | Path normalization, Git discovery, worktrees, stable project identifiers |
-| 4 | ⬜ | Session and Message Lifecycle | Create/continue sessions, ordered history, run locking, recovery |
+| 4 | ✅ | Session and Message Lifecycle | Create/continue sessions, ordered history, run locking, recovery |
 | 5 | ⬜ | Model Request Construction | Provider-independent contracts, system context, history conversion |
 | 6 | ⬜ | Streaming with a Fake Provider | Stream events, console deltas, partial persistence, cancellation |
 | 7 | ⬜ | OpenAI-Compatible Provider | HTTP streaming, SSE parser, configuration, provider error handling |
@@ -317,7 +317,7 @@ Legend:
 - Support process timeout and cancellation
 - Expose platform and current UTC date through testable abstractions
 
-### ⬜ Phase 4 — Session and Message Lifecycle
+### ✅ Phase 4 — Session and Message Lifecycle
 
 - Get or create the current Project
 - Create a new Session
@@ -473,9 +473,9 @@ dotnet test --no-build
 ## Project Status
 
 ```text
-Completed:  Phase 0, Phase 1, Phase 2, Phase 3
-Next:       Phase 4 — Session and Message Lifecycle
-Progress:   4 / 10 phases
+Completed:  Phase 0 تا Phase 4
+Next:       Phase 5 — Model Request Construction
+Progress:   5 / 10 phases
 ```
 
 AgentPulse is currently a strong architectural foundation rather than a finished AI assistant. The remaining phases will connect session management, model-request construction, streaming, a real provider, and the complete CLI workflow.
