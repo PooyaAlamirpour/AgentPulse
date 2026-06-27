@@ -69,11 +69,11 @@
 
 ## P-008 — شناسه پایدار Project برای پوشه Non-Git
 
-- وضعیت: پیشنهاد
-- فاز تصمیم‌گیری: ۳
-- مسئله: پوشه Non-Git باید در اجراهای بعدی Project پایدار داشته باشد.
-- گزینه‌های قابل بررسی: hash مسیر canonical، mapping دیتابیس یا شناسه ذخیره‌شده محلی.
-- نیازمند تصمیم: case sensitivity، symlink، path relocation و cross-platform behavior.
+- وضعیت: پذیرفته‌شده در فاز ۳
+- تصمیم: شناسه `Project` از hash قطعی نسخه‌دارِ مسیر Root canonical و Platform ساخته می‌شود و هیچ مقدار تصادفی یا فایل محلی برای تثبیت شناسه نوشته نمی‌شود.
+- رفتار Git: Root همان Working Tree جاری است؛ بنابراین Subdirectoryهای یک Repository شناسه مشترک دارند و Worktreeهای مستقل شناسه متفاوت می‌گیرند.
+- رفتار مسیر: در Windows canonicalization نسبت به حروف غیرحساس و با جداکننده یکنواخت است؛ در Unix حروف مسیر حفظ می‌شوند.
+- پیامد: جابه‌جایی Root به مسیر دیگر شناسه را تغییر می‌دهد. Resolve کامل تمام symlinkهای میانی در محدوده فاز ۳ نیست.
 
 ## P-009 — محل `ModelReference`
 

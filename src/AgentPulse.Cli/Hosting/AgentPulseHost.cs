@@ -6,6 +6,10 @@ using Microsoft.Extensions.Logging.Console;
 using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Console;
+using AgentPulse.Application.Processes;
+using AgentPulse.Application.ProjectContexts;
+using AgentPulse.Infrastructure.Processes;
+using AgentPulse.Infrastructure.ProjectContexts;
 
 namespace AgentPulse.Cli.Hosting;
 
@@ -44,6 +48,14 @@ public static class AgentPulseHost
                 static options => !string.IsNullOrWhiteSpace(options.ApplicationName),
                 $"{CliOptions.SectionName}:ApplicationName must not be empty.")
             .ValidateOnStart();
+
+        builder.Services.AddSingleton<IProjectFileSystem, SystemProjectFileSystem>();
+        builder.Services.AddSingleton<IProcessRunner, SystemProcessRunner>();
+        builder.Services.AddSingleton<IGitService, GitService>();
+        builder.Services.AddSingleton<IClock, SystemClock>();
+        builder.Services.AddSingleton<IPlatformProvider, SystemPlatformProvider>();
+        builder.Services.AddSingleton<IProjectIdFactory, DeterministicProjectIdFactory>();
+        builder.Services.AddSingleton<IProjectContextFactory, ProjectContextFactory>();
 
         builder.Services.AddSingleton<IConsole>(console ?? new SystemConsole());
         builder.Services.AddSingleton<IPromptInputReader, PromptInputReader>();

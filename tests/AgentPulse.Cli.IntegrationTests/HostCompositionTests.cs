@@ -6,6 +6,8 @@ using Microsoft.Extensions.Options;
 using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Hosting;
+using AgentPulse.Application.Processes;
+using AgentPulse.Application.ProjectContexts;
 
 namespace AgentPulse.Cli.IntegrationTests;
 
@@ -38,6 +40,13 @@ public sealed class HostCompositionTests
                 "agentpulse-test",
                 host.Services.GetRequiredService<IOptions<CliOptions>>().Value.ApplicationName);
             Assert.NotNull(host.Services.GetRequiredService<ILogger<CliApplication>>());
+            Assert.NotNull(host.Services.GetRequiredService<IProjectFileSystem>());
+            Assert.NotNull(host.Services.GetRequiredService<IProcessRunner>());
+            Assert.NotNull(host.Services.GetRequiredService<IGitService>());
+            Assert.NotNull(host.Services.GetRequiredService<IClock>());
+            Assert.NotNull(host.Services.GetRequiredService<IPlatformProvider>());
+            Assert.NotNull(host.Services.GetRequiredService<IProjectIdFactory>());
+            Assert.NotNull(host.Services.GetRequiredService<IProjectContextFactory>());
             Assert.NotNull(host.Services.GetRequiredService<IPromptInputReader>());
             Assert.NotNull(host.Services.GetRequiredService<IRunCommandHandler>());
             Assert.NotNull(host.Services.GetRequiredService<CliApplication>());
