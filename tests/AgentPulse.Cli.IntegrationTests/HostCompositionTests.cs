@@ -15,7 +15,6 @@ using AgentPulse.Application.SessionRuns;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
-using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Application.ProjectContexts;
 
@@ -68,7 +67,6 @@ public sealed class HostCompositionTests
             Assert.NotNull(host.Services.GetRequiredService<IProjectContextFactory>());
             Assert.NotNull(host.Services.GetRequiredService<SessionRunOptions>());
             Assert.NotNull(host.Services.GetRequiredService<StreamingRunOptions>());
-            Assert.NotNull(host.Services.GetRequiredService<XiaomiModelOptions>());
             Assert.NotNull(host.Services.GetRequiredService<OpenAiCompatibleModelOptions>());
             Assert.NotNull(host.Services.GetRequiredService<IOptions<OpenAiCompatibleModelOptions>>());
             Assert.NotNull(host.Services.GetRequiredService<ProviderCredentialStoreOptions>());
@@ -100,6 +98,7 @@ public sealed class HostCompositionTests
 
             Assert.NotNull(host.Services.GetRequiredService<IPromptInputReader>());
             Assert.NotNull(host.Services.GetRequiredService<IProviderCredentialStore>());
+            Assert.NotNull(host.Services.GetRequiredService<ILegacyProviderCredentialStore>());
             Assert.NotNull(host.Services.GetRequiredService<IProviderCredentialResolver>());
             Assert.NotNull(host.Services.GetRequiredService<IModelOutputSink>());
             Assert.NotNull(host.Services.GetRequiredService<IRunCommandHandler>());

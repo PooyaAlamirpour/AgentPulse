@@ -16,6 +16,12 @@ public sealed class OpenAiCompatibleModelOptions
         "Upgrade",
         "Trailer",
         "TE",
+        "Proxy-Authorization",
+        "Proxy-Authenticate",
+        "Cookie",
+        "Set-Cookie",
+        "Content-Type",
+        "Authorization",
     };
 
     public const string SectionName = "AgentPulse:Model";
@@ -46,6 +52,8 @@ public sealed class OpenAiCompatibleModelOptions
     public TimeSpan FirstByteTimeout { get; set; } = TimeSpan.FromSeconds(30);
 
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromMinutes(1);
+
+    public TimeSpan ErrorBodyReadTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     public void Validate()
     {
@@ -89,6 +97,11 @@ public sealed class OpenAiCompatibleModelOptions
         if (StreamIdleTimeout <= TimeSpan.Zero)
         {
             throw new InvalidOperationException("The stream idle timeout must be positive.");
+        }
+
+        if (ErrorBodyReadTimeout <= TimeSpan.Zero)
+        {
+            throw new InvalidOperationException("The error-body read timeout must be positive.");
         }
 
         _ = OpenAiCompatibleEndpointBuilder.Build(baseUri, ChatCompletionsPath);

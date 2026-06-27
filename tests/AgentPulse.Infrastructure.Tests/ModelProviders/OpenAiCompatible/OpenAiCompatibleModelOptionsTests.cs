@@ -22,6 +22,7 @@ public sealed class OpenAiCompatibleModelOptionsTests
         Assert.True(options.IncludeThinkingConfiguration);
         Assert.Equal(TimeSpan.FromSeconds(30), options.FirstByteTimeout);
         Assert.Equal(TimeSpan.FromMinutes(1), options.StreamIdleTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(10), options.ErrorBodyReadTimeout);
         Assert.DoesNotContain(
             typeof(OpenAiCompatibleModelOptions).GetProperties(),
             property => string.Equals(property.Name, "ApiKey", StringComparison.Ordinal));
@@ -63,6 +64,13 @@ public sealed class OpenAiCompatibleModelOptionsTests
     [InlineData("../chat/completions")]
     [InlineData("chat/../completions")]
     [InlineData("chat/%2e%2e/completions")]
+    [InlineData("chat/%2e%2e%2fadmin")]
+    [InlineData("chat/%2e%2e%5cadmin")]
+    [InlineData("chat/%252e%252e%252fadmin")]
+    [InlineData("chat/%00/completions")]
+    [InlineData("chat/completions%3ftoken=x")]
+    [InlineData("chat/completions%23fragment")]
+    [InlineData("/chat/completions")]
     [InlineData("chat/completions?tenant=1")]
     [InlineData("chat/completions#fragment")]
     public void Rejects_unsafe_chat_completion_paths(string path)
@@ -75,9 +83,20 @@ public sealed class OpenAiCompatibleModelOptionsTests
     [Theory]
     [InlineData("api key")]
     [InlineData("Host")]
+    [InlineData("host")]
     [InlineData("Content-Length")]
     [InlineData("Transfer-Encoding")]
+    [InlineData("Connection")]
+    [InlineData("Upgrade")]
+    [InlineData("Proxy-Authorization")]
+    [InlineData("Proxy-Authenticate")]
+    [InlineData("Cookie")]
+    [InlineData("Set-Cookie")]
+    [InlineData("Content-Type")]
+    [InlineData("Authorization")]
+    [InlineData("authorization")]
     [InlineData("bad:header")]
+    [InlineData("bad\r\nheader")]
     public void Rejects_invalid_or_sensitive_api_key_headers(string headerName)
     {
         var options = new OpenAiCompatibleModelOptions
@@ -86,6 +105,19 @@ public sealed class OpenAiCompatibleModelOptionsTests
         };
 
         Assert.Throws<InvalidOperationException>(options.Validate);
+    }
+
+    [Theory]
+    [InlineData("api-key")]
+    [InlineData("x-provider-key")]
+    public void Accepts_valid_custom_api_key_headers(string headerName)
+    {
+        var options = new OpenAiCompatibleModelOptions
+        {
+            ApiKeyHeaderName = headerName,
+        };
+
+        options.Validate();
     }
 
     [Fact]
@@ -164,6 +196,8 @@ public sealed class OpenAiCompatibleModelOptionsTests
             new OpenAiCompatibleModelOptions { FirstByteTimeout = TimeSpan.Zero }.Validate);
         Assert.Throws<InvalidOperationException>(
             new OpenAiCompatibleModelOptions { StreamIdleTimeout = TimeSpan.Zero }.Validate);
+        Assert.Throws<InvalidOperationException>(
+            new OpenAiCompatibleModelOptions { ErrorBodyReadTimeout = TimeSpan.Zero }.Validate);
     }
 
     [Fact]
@@ -178,12 +212,26 @@ public sealed class OpenAiCompatibleModelOptionsTests
         options.Validate();
     }
 
+    [Theory]
+    [InlineData("chat/completions")]
+    [InlineData("v1/chat/completions")]
+    [InlineData("api/models/chat-completions")]
+    public void Accepts_safe_relative_chat_completion_paths(string path)
+    {
+        var options = new OpenAiCompatibleModelOptions
+        {
+            ChatCompletionsPath = path,
+        };
+
+        options.Validate();
+    }
+
     [Fact]
     public void Endpoint_join_preserves_base_path_and_normalizes_slashes()
     {
         var endpoint = OpenAiCompatibleEndpointBuilder.Build(
             "https://provider.example/v1//",
-            "/chat//completions/");
+            "chat//completions/");
 
         Assert.Equal("https://provider.example/v1/chat/completions", endpoint.ToString().TrimEnd('/'));
     }

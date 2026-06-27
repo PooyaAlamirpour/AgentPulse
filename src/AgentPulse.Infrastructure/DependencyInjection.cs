@@ -3,7 +3,6 @@ using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.Persistence;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
-using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
 using Microsoft.Data.Sqlite;
@@ -66,10 +65,15 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddSingleton(ProviderCredentialScope.XiaomiDefault);
-        services.AddSingleton<IProviderCredentialStore, DataProtectionProviderCredentialStore>();
+        services.AddSingleton<DataProtectionProviderCredentialStore>();
+        services.AddSingleton<IProviderCredentialStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<DataProtectionProviderCredentialStore>());
+        services.AddSingleton<ILegacyProviderCredentialStore>(serviceProvider =>
+            serviceProvider.GetRequiredService<DataProtectionProviderCredentialStore>());
         services.AddScoped<IProviderCredentialSession>(serviceProvider =>
             new ProviderCredentialSession(
                 serviceProvider.GetRequiredService<IProviderCredentialStore>(),
+                serviceProvider.GetRequiredService<ILegacyProviderCredentialStore>(),
                 serviceProvider.GetRequiredService<ProviderCredentialScope>()));
         return services;
     }
@@ -113,24 +117,4 @@ public static class DependencyInjection
         return services.AddOpenAiCompatibleModelProvider();
     }
 
-    public static IServiceCollection AddXiaomiModelProvider(
-        this IServiceCollection services)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        services.TryAddSingleton(new XiaomiModelOptions());
-        services.TryAddSingleton(new OpenAiCompatibleModelOptions());
-        services.TryAddSingleton(ProviderCredentialScope.XiaomiDefault);
-        return services.AddOpenAiCompatibleModelProvider();
-    }
-
-    public static IServiceCollection AddXiaomiModelProvider(
-        this IServiceCollection services,
-        XiaomiModelOptions options)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        options.Validate();
-        services.AddSingleton(options);
-        return services.AddOpenAiCompatibleModelProvider(
-            options.ToOpenAiCompatibleOptions());
-    }
 }

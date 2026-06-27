@@ -40,7 +40,8 @@ The implementation is developed through a 10-phase roadmap. **Phase 7 is complet
 - Automatic HTTP redirects disabled to prevent forwarding credentials to another target
 - HTTPS required for remote hosts; HTTP accepted only for loopback test or development endpoints
 - Incremental SSE parsing for fragmented frames, fragmented UTF-8, LF/CRLF, comments, keep-alive events, multi-line `data:`, `[DONE]`, deltas, finish reason, and usage
-- Distinct first-byte and stream-idle timeouts
+- A single first-byte deadline spanning request start, response headers, and the first body byte
+- Distinct stream-idle and bounded error-body read timeouts
 - Cancellation propagated through `SendAsync`, response-stream reads, and SSE enumeration
 - Provider-independent error taxonomy and `BeforeFirstToken` / `AfterFirstToken` failure stages
 - No automatic retry for chargeable streaming requests
@@ -62,7 +63,8 @@ The implementation is developed through a 10-phase roadmap. **Phase 7 is complet
       "ThinkingMode": "disabled",
       "IncludeThinkingConfiguration": true,
       "FirstByteTimeout": "00:00:30",
-      "StreamIdleTimeout": "00:01:00"
+      "StreamIdleTimeout": "00:01:00",
+      "ErrorBodyReadTimeout": "00:00:10"
     }
   }
 }
@@ -102,7 +104,8 @@ A custom endpoint is selected only through configuration. No new command is requ
       "ThinkingMode": "disabled",
       "IncludeThinkingConfiguration": false,
       "FirstByteTimeout": "00:00:30",
-      "StreamIdleTimeout": "00:01:00"
+      "StreamIdleTimeout": "00:01:00",
+      "ErrorBodyReadTimeout": "00:00:10"
     }
   }
 }
@@ -117,6 +120,7 @@ $env:AgentPulse__Model__Model = "provider-model"
 $env:AgentPulse__Model__AuthenticationMode = "Bearer"
 $env:AgentPulse__Model__ApiKeyEnvironmentVariable = "PROVIDER_API_KEY"
 $env:AgentPulse__Model__IncludeThinkingConfiguration = "false"
+$env:AgentPulse__Model__ErrorBodyReadTimeout = "00:00:10"
 $env:PROVIDER_API_KEY = "..."
 ```
 
@@ -125,7 +129,7 @@ Supported authentication modes are:
 - `Bearer` → `Authorization: Bearer <API_KEY>`
 - `ApiKeyHeader` → `<ApiKeyHeaderName>: <API_KEY>`
 
-Sensitive or transport-controlled header names such as `Host`, `Content-Length`, and `Transfer-Encoding` are rejected for `ApiKeyHeader` mode. `ApiKeyHeaderName` is ignored in `Bearer` mode.
+Sensitive or transport-controlled header names such as `Host`, `Content-Length`, `Transfer-Encoding`, `Connection`, `Upgrade`, proxy authentication headers, cookie headers, `Content-Type`, and `Authorization` are rejected for `ApiKeyHeader` mode. `ApiKeyHeaderName` is ignored in `Bearer` mode. API credentials are trimmed at their outer edges and rejected before any HTTP request when they are empty or contain CR, LF, NUL, tab, DEL, or another control character.
 
 ### Configuration Precedence
 
@@ -136,7 +140,7 @@ Non-secret model configuration uses the standard order below, from lowest to hig
 3. `appsettings.{Environment}.json`
 4. Environment variables
 
-Environment variables therefore override JSON. Supported model keys include:
+Environment variables therefore override JSON. The CLI project copies both `appsettings.json` and any existing `appsettings.*.json` files to Build and Publish output with `PreserveNewest`; environment-specific files remain optional. Supported model keys include:
 
 ```text
 AgentPulse__Model__BaseUrl
@@ -150,6 +154,7 @@ AgentPulse__Model__ThinkingMode
 AgentPulse__Model__IncludeThinkingConfiguration
 AgentPulse__Model__FirstByteTimeout
 AgentPulse__Model__StreamIdleTimeout
+AgentPulse__Model__ErrorBodyReadTimeout
 ```
 
 The actual API key is deliberately not a bindable option. `OpenAiCompatibleModelOptions` has no `ApiKey` property, and an `ApiKey` value placed in JSON is ignored.
@@ -162,7 +167,7 @@ Credential resolution for `run` uses this order:
 2. The securely stored credential for the current endpoint scope
 3. A hidden interactive prompt
 
-An environment credential is never copied into the credential store. A prompted credential is stored only after the endpoint returns a successful HTTP response. A stored credential rejected with `401` or `403` is removed only from the current endpoint scope.
+An environment credential is never copied into the credential store. A prompted credential is stored only after a successful streamed provider response begins. A valid scoped stored credential is reused without being rewritten after each successful run. A stored credential rejected with `401` or `403` is removed only from the current endpoint scope.
 
 A credential scope is derived from non-secret endpoint identity:
 
@@ -174,7 +179,9 @@ The model and base-URL path are intentionally excluded because one key commonly 
 
 Changing `BaseUrl` to another host does **not** make the previous credential available to that host. Scoped file names use a SHA-256 digest of the non-secret scope; neither the key nor a key-derived hash appears in the file name or metadata. Credential contents remain protected by ASP.NET Core Data Protection.
 
-A legacy unscoped Phase 6 credential is considered only for the official Xiaomi endpoint. After that credential is accepted successfully by Xiaomi, it is rewritten into the scoped format and the legacy file is removed. It is never migrated or used for a custom host.
+A legacy unscoped Phase 6 credential is considered only for the official Xiaomi endpoint. After that credential is accepted successfully by Xiaomi, it is migrated exactly once into the scoped format and the legacy file is removed only after the scoped save succeeds. It remains untouched after a failed provider run and is never migrated or used for a custom host.
+
+CLI help and command descriptions are provider-neutral; Xiaomi appears only as the default configuration profile and optional live-test target.
 
 The `auth` commands always operate on the current configuration scope:
 
@@ -195,12 +202,13 @@ The exact operating-system path is derived at runtime. Credentials are never sto
 ### Endpoint and Redirect Security
 
 - `BaseUrl` must be absolute.
-- `ChatCompletionsPath` must be relative and cannot contain another scheme, host, query, fragment, backslash, or traversal segment.
+- `ChatCompletionsPath` must be relative and cannot contain another scheme, host, query, fragment, backslash, traversal segment, encoded separator, encoded NUL, or single/double-encoded traversal sequence.
 - Base URL and relative path are combined without changing origin.
 - Remote HTTP endpoints are rejected; loopback HTTP remains available for local contract tests and development.
 - `301`, `302`, `303`, `307`, and `308` are converted to provider errors instead of being followed.
 - Redirect locations and provider error URLs are sanitized by removing user information, query strings, and fragments.
-- Error bodies are read only up to a bounded limit and are sanitized before entering exceptions.
+- Error bodies are read only up to a bounded limit and within `ErrorBodyReadTimeout` (default `00:00:10`); timeout maps to `Timeout / BeforeFirstToken` and user cancellation remains distinct.
+- `FirstByteTimeout` is one deadline from `SendAsync` start through response headers and the first body byte; it is not restarted after headers.
 - API keys, authorization headers, request bodies, system prompts, and conversation history are not retained in provider exceptions.
 
 ### Persistence and Recovery
@@ -394,17 +402,18 @@ Later phases remain planned and are not marked complete.
 Phase 7 adds or preserves deterministic coverage for:
 
 - Default Xiaomi and generic Bearer provider profiles
-- JSON, environment-specific JSON, and environment-variable configuration precedence
+- JSON, environment-specific JSON, and environment-variable configuration precedence, plus Build/Publish copy metadata
 - Custom endpoint, path, model, authentication mode, header name, and API-key environment-variable name
 - Fail-fast validation and absence of a bindable API-key option
 - Credential scope normalization and isolation by host, scheme, port, authentication mode, and header name
-- Legacy Xiaomi credential migration and rejection for custom hosts
+- Prompt/environment/stored/legacy credential-source persistence rules, one-time legacy migration, and rejection for custom hosts
 - Scoped `auth set`, `auth status`, and idempotent `auth clear`
 - Redirect status handling and proof that the redirect target receives no request
+- Encoded and double-encoded traversal rejection, forbidden header names, and credential control-character rejection
 - OpenAI-compatible wrapped and unwrapped JSON errors, text, empty, malformed, and oversized bodies
-- Error taxonomy, retry metadata, request ID, and sensitive-data sanitization
+- Error-body size/deadline enforcement, cancellation distinction, error taxonomy, retry metadata, request ID, and sensitive-data sanitization
 - SSE fragmentation, multi-byte UTF-8, multi-line data, completion, usage, malformed and incomplete streams
-- Before/after-first-token failure stages for protocol errors, timeout, and cancellation
+- One shared first-byte deadline and before/after-first-token failure stages for protocol errors, timeout, and cancellation
 - HTTP cancellation observed by the local contract server
 - Partial-output preservation in the existing streaming persistence flow
 - Explicitly opt-in live Xiaomi connectivity only

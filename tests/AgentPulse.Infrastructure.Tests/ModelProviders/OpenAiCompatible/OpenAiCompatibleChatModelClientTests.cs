@@ -47,7 +47,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
         await using var server = SuccessfulServer();
         var options = CreateOptions(server.BaseUri);
         options.Model = "generic-model";
-        options.ChatCompletionsPath = "/custom//chat/completions/";
+        options.ChatCompletionsPath = "custom//chat/completions/";
         options.AuthenticationMode = OpenAiCompatibleAuthenticationMode.Bearer;
         options.ApiKeyHeaderName = "Host";
         options.ApiKeyEnvironmentVariable = "GENERIC_API_KEY";
@@ -66,6 +66,62 @@ public sealed class OpenAiCompatibleChatModelClientTests
         Assert.False(root.TryGetProperty("thinking", out _));
         var messages = root.GetProperty("messages").EnumerateArray().ToArray();
         Assert.Equal(["system", "user", "assistant"], messages.Select(value => value.GetProperty("role").GetString()));
+    }
+
+    [Fact]
+    public async Task Custom_api_key_header_is_transmitted_without_default_or_bearer_headers()
+    {
+        await using var server = SuccessfulServer();
+        var options = CreateOptions(server.BaseUri);
+        options.ApiKeyHeaderName = "x-provider-key";
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+
+        await ReadAllAsync(client);
+        var request = await server.Request;
+
+        Assert.Equal(Secret, request.Headers["x-provider-key"]);
+        Assert.False(request.Headers.ContainsKey("api-key"));
+        Assert.False(request.Headers.ContainsKey("Authorization"));
+    }
+
+    [Fact]
+    public async Task Credential_is_trimmed_before_transmission()
+    {
+        await using var server = SuccessfulServer();
+        var client = CreateClient(
+            CreateOptions(server.BaseUri),
+            new RecordingCredentialSession("  " + Secret + "  "));
+
+        await ReadAllAsync(client);
+        var request = await server.Request;
+
+        Assert.Equal(Secret, request.Headers["api-key"]);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("bad\rkey")]
+    [InlineData("bad\nkey")]
+    [InlineData("bad\r\nkey")]
+    [InlineData("bad\0key")]
+    [InlineData("bad\u0001key")]
+    [InlineData("bad\u001Fkey")]
+    [InlineData("bad\u007Fkey")]
+    [InlineData("bad\tkey")]
+    public async Task Invalid_credentials_are_rejected_before_any_http_request(string credential)
+    {
+        await using var server = SuccessfulServer();
+        var client = CreateClient(
+            CreateOptions(server.BaseUri),
+            new RecordingCredentialSession(credential));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.DoesNotContain("bad", exception.ToString(), StringComparison.OrdinalIgnoreCase);
+        Assert.False(server.HasReceivedRequest);
     }
 
     [Theory]
@@ -175,6 +231,67 @@ public sealed class OpenAiCompatibleChatModelClientTests
         Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Error_body_read_timeout_is_bounded_and_reports_before_first_token()
+    {
+        var headersSent = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await LocalModelServer.WriteAsync(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\n" +
+                "Content-Length: 100\r\n" +
+                "Connection: close\r\n\r\npartial",
+                cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+            headersSent.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        });
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromMilliseconds(400);
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+
+        var run = ReadAllAsync(client);
+        await headersSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => run);
+
+        Assert.Equal(ModelProviderErrorCode.Timeout, exception.Code);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+        Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task User_cancellation_while_reading_error_body_is_not_mapped_to_timeout()
+    {
+        var headersSent = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await LocalModelServer.WriteAsync(
+                stream,
+                "HTTP/1.1 400 Bad Request\r\n" +
+                "Content-Length: 100\r\n" +
+                "Connection: close\r\n\r\npartial",
+                cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+            headersSent.TrySetResult(true);
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        });
+        var options = CreateOptions(server.BaseUri);
+        options.ErrorBodyReadTimeout = TimeSpan.FromSeconds(5);
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+        using var cancellation = new CancellationTokenSource();
+
+        var run = ReadAllAsync(client, cancellation.Token);
+        await headersSent.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        cancellation.Cancel();
+        var exception = await Assert.ThrowsAsync<ModelProviderOperationCanceledException>(() => run);
+
+        Assert.Equal(ModelProviderErrorCode.Cancelled, exception.Code);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+    }
+
     [Theory]
     [InlineData(301)]
     [InlineData(302)]
@@ -217,12 +334,14 @@ public sealed class OpenAiCompatibleChatModelClientTests
             await LocalModelServer.WriteSseHeadersAsync(stream, cancellationToken);
             await LocalModelServer.WriteAsync(stream, "data: {broken}\n\n", cancellationToken);
         });
-        var client = CreateClient(CreateOptions(server.BaseUri), new RecordingCredentialSession(Secret));
+        var credential = new RecordingCredentialSession(Secret);
+        var client = CreateClient(CreateOptions(server.BaseUri), credential);
 
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
 
         Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
         Assert.Equal(ModelProviderErrorCode.InvalidResponse, exception.Code);
+        Assert.Equal(0, credential.AcceptedCalls);
     }
 
     [Fact]
@@ -250,6 +369,44 @@ public sealed class OpenAiCompatibleChatModelClientTests
         Assert.Equal(["Hel"], deltas);
         Assert.Equal(ModelFailureStage.AfterFirstToken, exception.FailureStage);
         Assert.Equal(ModelProviderErrorCode.InvalidResponse, exception.Code);
+    }
+
+    [Fact]
+    public async Task First_byte_timeout_is_one_deadline_across_headers_and_first_body_byte()
+    {
+        await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await LocalModelServer.WriteSseHeadersAsync(stream, cancellationToken);
+            await stream.FlushAsync(cancellationToken);
+            await Task.Delay(TimeSpan.FromMilliseconds(300), cancellationToken);
+            await LocalModelServer.WriteAsync(stream, Data("late"), cancellationToken);
+        });
+        var options = CreateOptions(server.BaseUri);
+        options.FirstByteTimeout = TimeSpan.FromMilliseconds(500);
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Timeout, exception.Code);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
+    }
+
+    [Fact]
+    public async Task Timeout_before_response_headers_reports_before_first_token()
+    {
+        await using var server = new LocalModelServer(async (stream, request, cancellationToken) =>
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+        });
+        var options = CreateOptions(server.BaseUri);
+        options.FirstByteTimeout = TimeSpan.FromMilliseconds(400);
+        var client = CreateClient(options, new RecordingCredentialSession(Secret));
+
+        var exception = await Assert.ThrowsAsync<ModelProviderException>(() => ReadAllAsync(client));
+
+        Assert.Equal(ModelProviderErrorCode.Timeout, exception.Code);
+        Assert.Equal(ModelFailureStage.BeforeFirstToken, exception.FailureStage);
     }
 
     [Fact]
@@ -412,6 +569,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
             BaseUrl = new Uri(baseUri, "v1").ToString(),
             FirstByteTimeout = TimeSpan.FromSeconds(2),
             StreamIdleTimeout = TimeSpan.FromSeconds(2),
+            ErrorBodyReadTimeout = TimeSpan.FromSeconds(2),
         };
     }
 

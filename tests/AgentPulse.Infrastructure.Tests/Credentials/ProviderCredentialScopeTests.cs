@@ -97,12 +97,12 @@ public sealed class ProviderCredentialScopeTests
     }
 
     [Fact]
-    public async Task Legacy_credential_is_visible_only_to_official_xiaomi_and_migrates_after_acceptance()
+    public async Task Legacy_credential_is_separate_and_migrates_after_official_xiaomi_acceptance()
     {
         await using var directory = new TemporaryDirectory();
         var store = CreateStore(directory);
         const string secret = "legacy-secret";
-        await store.SaveAsync(secret);
+        await store.SaveLegacyAsync(secret);
         var legacyPath = Path.Combine(directory.Path, "xiaomi-mimo.credential");
         var customScope = Scope(
             "https://provider.example/v1",
@@ -110,13 +110,15 @@ public sealed class ProviderCredentialScopeTests
             "api-key");
 
         Assert.Null(await store.GetAsync(customScope));
-        Assert.Equal(secret, await store.GetAsync(ProviderCredentialScope.XiaomiDefault));
+        Assert.Null(await store.GetAsync(ProviderCredentialScope.XiaomiDefault));
+        Assert.Equal(secret, await store.GetLegacyAsync());
         Assert.True(File.Exists(legacyPath));
 
         var session = new ProviderCredentialSession(
             store,
+            store,
             ProviderCredentialScope.XiaomiDefault);
-        session.Set(secret, ProviderCredentialSource.Stored);
+        session.Set(secret, ProviderCredentialSource.LegacyStored);
         await session.MarkAcceptedAsync();
 
         Assert.False(File.Exists(legacyPath));
@@ -124,11 +126,11 @@ public sealed class ProviderCredentialScopeTests
     }
 
     [Fact]
-    public async Task Corrupt_legacy_credential_is_safe_and_is_not_considered_for_custom_hosts()
+    public async Task Corrupt_legacy_credential_is_safe_and_scoped_reads_remain_isolated()
     {
         await using var directory = new TemporaryDirectory();
         var store = CreateStore(directory);
-        await store.SaveAsync("legacy-secret");
+        await store.SaveLegacyAsync("legacy-secret");
         await File.WriteAllTextAsync(
             Path.Combine(directory.Path, "xiaomi-mimo.credential"),
             "corrupt");
@@ -138,8 +140,9 @@ public sealed class ProviderCredentialScopeTests
             null);
 
         Assert.Null(await store.GetAsync(customScope));
+        Assert.Null(await store.GetAsync(ProviderCredentialScope.XiaomiDefault));
         var exception = await Assert.ThrowsAsync<ProviderCredentialStoreException>(
-            () => store.GetAsync(ProviderCredentialScope.XiaomiDefault));
+            () => store.GetLegacyAsync());
         Assert.DoesNotContain("legacy-secret", exception.ToString(), StringComparison.Ordinal);
     }
 

@@ -2,6 +2,8 @@ namespace AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 
 public static class OpenAiCompatibleEndpointBuilder
 {
+    private const int MaximumDecodePasses = 4;
+
     public static Uri Build(string baseUrl, string chatCompletionsPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(baseUrl);
@@ -17,10 +19,11 @@ public static class OpenAiCompatibleEndpointBuilder
         var normalizedPath = NormalizePath(chatCompletionsPath);
         var endpoint = new Uri(new Uri(normalizedBase, UriKind.Absolute), normalizedPath);
 
-        if (!HasSameOrigin(baseUri, endpoint))
+        if (!HasSameOrigin(baseUri, endpoint) ||
+            !IsWithinBasePath(new Uri(normalizedBase, UriKind.Absolute), endpoint))
         {
             throw new InvalidOperationException(
-                "The chat completions path must remain on the configured model endpoint origin.");
+                "The chat completions path must remain within the configured model endpoint.");
         }
 
         return endpoint;
@@ -34,30 +37,45 @@ public static class OpenAiCompatibleEndpointBuilder
         }
 
         var trimmed = value.Trim();
-        var relativeCandidate = trimmed.TrimStart('/');
-        if (trimmed.StartsWith("//", StringComparison.Ordinal) ||
+        if (trimmed.StartsWith("/", StringComparison.Ordinal) ||
             trimmed.StartsWith('\\') ||
-            string.IsNullOrWhiteSpace(relativeCandidate) ||
-            Uri.TryCreate(relativeCandidate, UriKind.Absolute, out _) ||
-            trimmed.Contains('\\'))
+            Uri.TryCreate(trimmed, UriKind.Absolute, out _))
         {
             throw new InvalidOperationException(
                 "The chat completions path must be a relative HTTP path.");
         }
 
-        if (trimmed.Contains('?') ||
-            trimmed.Contains('#'))
+        if (trimmed.Contains('?') || trimmed.Contains('#'))
         {
             throw new InvalidOperationException(
                 "The chat completions path must not contain a query string or fragment.");
         }
 
-        foreach (var segment in trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        var segments = trimmed.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0)
         {
+            throw new InvalidOperationException("The chat completions path must not be empty.");
+        }
+
+        foreach (var segment in segments)
+        {
+            ValidateSegment(segment);
+        }
+    }
+
+    private static void ValidateSegment(string segment)
+    {
+        var current = segment;
+
+        for (var pass = 0; pass < MaximumDecodePasses; pass++)
+        {
+            EnsureValidPercentEscaping(current);
+            RejectUnsafeSegment(current);
+
             string decoded;
             try
             {
-                decoded = Uri.UnescapeDataString(segment);
+                decoded = Uri.UnescapeDataString(current);
             }
             catch (UriFormatException exception)
             {
@@ -66,12 +84,71 @@ public static class OpenAiCompatibleEndpointBuilder
                     exception);
             }
 
-            if (decoded is "." or "..")
+            RejectUnsafeSegment(decoded);
+            if (string.Equals(decoded, current, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            current = decoded;
+        }
+
+        EnsureValidPercentEscaping(current);
+        RejectUnsafeSegment(current);
+        if (!string.Equals(Uri.UnescapeDataString(current), current, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The chat completions path contains excessive nested escaping.");
+        }
+    }
+
+    private static void RejectUnsafeSegment(string value)
+    {
+        if (value is "." or ".." ||
+            value.Contains('/') ||
+            value.Contains('\\') ||
+            value.Contains('?') ||
+            value.Contains('#') ||
+            value.Any(static character => character is '\0' or < ' ' or '\u007F') ||
+            ContainsEncodedDanger(value))
+        {
+            throw new InvalidOperationException(
+                "The chat completions path contains an unsafe traversal or separator sequence.");
+        }
+    }
+
+    private static bool ContainsEncodedDanger(string value)
+    {
+        return value.Contains("%2e", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("%2f", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("%5c", StringComparison.OrdinalIgnoreCase) ||
+               value.Contains("%00", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void EnsureValidPercentEscaping(string value)
+    {
+        for (var index = 0; index < value.Length; index++)
+        {
+            if (value[index] != '%')
+            {
+                continue;
+            }
+
+            if (index + 2 >= value.Length ||
+                !IsHex(value[index + 1]) ||
+                !IsHex(value[index + 2]))
             {
                 throw new InvalidOperationException(
-                    "The chat completions path must not contain traversal segments.");
+                    "The chat completions path contains invalid escaping.");
             }
+
+            index += 2;
         }
+    }
+
+    private static bool IsHex(char value)
+    {
+        return char.IsAsciiHexDigit(value);
     }
 
     private static string NormalizePath(string value)
@@ -86,5 +163,11 @@ public static class OpenAiCompatibleEndpointBuilder
         return string.Equals(left.Scheme, right.Scheme, StringComparison.OrdinalIgnoreCase) &&
                string.Equals(left.IdnHost, right.IdnHost, StringComparison.OrdinalIgnoreCase) &&
                left.Port == right.Port;
+    }
+
+    private static bool IsWithinBasePath(Uri baseUri, Uri endpoint)
+    {
+        var basePath = baseUri.AbsolutePath.TrimEnd('/') + "/";
+        return endpoint.AbsolutePath.StartsWith(basePath, StringComparison.Ordinal);
     }
 }

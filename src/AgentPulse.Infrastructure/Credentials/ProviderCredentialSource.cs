@@ -3,6 +3,7 @@ namespace AgentPulse.Infrastructure.Credentials;
 public enum ProviderCredentialSource
 {
     Environment = 0,
-    Stored = 1,
-    Prompt = 2,
+    Prompt = 1,
+    Stored = 2,
+    LegacyStored = 3,
 }

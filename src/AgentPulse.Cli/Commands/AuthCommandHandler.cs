@@ -9,6 +9,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
 {
     private readonly IEnvironmentVariableReader _environmentVariables;
     private readonly IProviderCredentialStore _credentialStore;
+    private readonly ILegacyProviderCredentialStore _legacyCredentialStore;
     private readonly ISecretInputReader _secretInputReader;
     private readonly IConsole _console;
     private readonly OpenAiCompatibleModelOptions _options;
@@ -22,6 +23,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         : this(
             environmentVariables,
             credentialStore,
+            NullLegacyProviderCredentialStore.Instance,
             secretInputReader,
             console,
             new OpenAiCompatibleModelOptions())
@@ -34,11 +36,30 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         ISecretInputReader secretInputReader,
         IConsole console,
         OpenAiCompatibleModelOptions options)
+        : this(
+            environmentVariables,
+            credentialStore,
+            NullLegacyProviderCredentialStore.Instance,
+            secretInputReader,
+            console,
+            options)
+    {
+    }
+
+    public AuthCommandHandler(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ILegacyProviderCredentialStore legacyCredentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console,
+        OpenAiCompatibleModelOptions options)
     {
         _environmentVariables = environmentVariables ??
             throw new ArgumentNullException(nameof(environmentVariables));
         _credentialStore = credentialStore ??
             throw new ArgumentNullException(nameof(credentialStore));
+        _legacyCredentialStore = legacyCredentialStore ??
+            throw new ArgumentNullException(nameof(legacyCredentialStore));
         _secretInputReader = secretInputReader ??
             throw new ArgumentNullException(nameof(secretInputReader));
         _console = console ?? throw new ArgumentNullException(nameof(console));
@@ -126,11 +147,24 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         var environmentCredential = _environmentVariables.Get(
             _options.ApiKeyEnvironmentVariable);
 
-        var message = !string.IsNullOrWhiteSpace(environmentCredential)
-            ? "Configured API key environment variable is available."
-            : await _credentialStore.ExistsAsync(_scope, cancellationToken)
+        string message;
+        if (!string.IsNullOrWhiteSpace(environmentCredential))
+        {
+            message = "Configured API key environment variable is available.";
+        }
+        else
+        {
+            var scopedCredentialExists = await _credentialStore.ExistsAsync(
+                _scope,
+                cancellationToken);
+            var legacyCredentialExists = !scopedCredentialExists &&
+                                         _scope.IsOfficialXiaomi &&
+                                         await _legacyCredentialStore.LegacyExistsAsync(
+                                             cancellationToken);
+            message = scopedCredentialExists || legacyCredentialExists
                 ? "API credential is configured for the current model endpoint."
                 : "API credential is not configured for the current model endpoint.";
+        }
 
         await _console.Out.WriteLineAsync(message.AsMemory(), cancellationToken);
         await _console.Out.FlushAsync(cancellationToken);
@@ -140,6 +174,11 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
     private async Task<int> ClearAsync(CancellationToken cancellationToken)
     {
         await _credentialStore.DeleteAsync(_scope, cancellationToken);
+        if (_scope.IsOfficialXiaomi)
+        {
+            await _legacyCredentialStore.DeleteLegacyAsync(cancellationToken);
+        }
+
         await _console.Out.WriteLineAsync(
             "Stored API credential was cleared for the current model endpoint.".AsMemory(),
             cancellationToken);
@@ -156,5 +195,28 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             cancellationToken);
         await _console.Error.FlushAsync(cancellationToken);
         return ExitCodes.Failure;
+    }
+
+    private sealed class NullLegacyProviderCredentialStore : ILegacyProviderCredentialStore
+    {
+        public static NullLegacyProviderCredentialStore Instance { get; } = new();
+
+        public Task<string?> GetLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>(null);
+        }
+
+        public Task DeleteLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> LegacyExistsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(false);
+        }
     }
 }

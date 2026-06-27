@@ -85,9 +85,11 @@ public sealed class CredentialCommandTests
         var session = new ProviderCredentialSession(store);
 
         await resolver.ResolveForRunAsync(session);
+        await session.MarkAcceptedAsync();
 
         Assert.Equal("stored-key", session.GetRequiredCredential());
         Assert.Equal(0, secretReader.ReadCount);
+        Assert.Equal(0, store.SaveCount);
     }
 
     [Fact]
@@ -106,6 +108,70 @@ public sealed class CredentialCommandTests
 
         Assert.Contains("Set MIMO_API_KEY", exception.Message, StringComparison.Ordinal);
         Assert.Contains("agentpulse auth set", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Official_xiaomi_legacy_credential_is_migrated_only_after_success()
+    {
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore
+        {
+            LegacyCredential = "legacy-key",
+        };
+        var options = new OpenAiCompatibleModelOptions();
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader(),
+            store,
+            store,
+            new RecordingSecretInputReader("unused"),
+            console,
+            options);
+        var session = new ProviderCredentialSession(
+            store,
+            store,
+            options.CreateCredentialScope());
+
+        await resolver.ResolveForRunAsync(session);
+
+        Assert.Equal("legacy-key", session.GetRequiredCredential());
+        Assert.Equal(0, store.SaveCount);
+        Assert.Equal(0, store.DeleteLegacyCount);
+
+        await session.MarkAcceptedAsync();
+
+        Assert.Equal(1, store.SaveCount);
+        Assert.Equal(1, store.DeleteLegacyCount);
+        Assert.Null(store.LegacyCredential);
+    }
+
+    [Fact]
+    public async Task Custom_endpoint_never_reads_or_migrates_legacy_xiaomi_credential()
+    {
+        var console = new TestConsole(input: string.Empty, isInputRedirected: true);
+        var store = new RecordingCredentialStore
+        {
+            LegacyCredential = "legacy-key",
+        };
+        var options = GenericOptions("https://provider.example/v1", "PROVIDER_API_KEY");
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader(),
+            store,
+            store,
+            new RecordingSecretInputReader("unused"),
+            console,
+            options);
+
+        await Assert.ThrowsAsync<CredentialResolutionException>(() =>
+            resolver.ResolveForRunAsync(
+                new ProviderCredentialSession(
+                    store,
+                    store,
+                    options.CreateCredentialScope())));
+
+        Assert.Equal(0, store.GetLegacyCount);
+        Assert.Equal(0, store.SaveCount);
+        Assert.Equal(0, store.DeleteLegacyCount);
+        Assert.Equal("legacy-key", store.LegacyCredential);
     }
 
     [Fact]
@@ -135,6 +201,59 @@ public sealed class CredentialCommandTests
         Assert.Equal(ExitCodes.Success, await handler.HandleAsync("clear"));
         Assert.Equal(ExitCodes.Success, await handler.HandleAsync("clear"));
         Assert.Null(store.StoredCredential);
+    }
+
+    [Fact]
+    public async Task Auth_status_and_clear_include_legacy_credential_only_for_official_xiaomi_scope()
+    {
+        var officialConsole = new TestConsole(isInputRedirected: false);
+        var officialStore = new RecordingCredentialStore
+        {
+            LegacyCredential = "legacy-key",
+        };
+        var officialOptions = new OpenAiCompatibleModelOptions();
+        var officialHandler = new AuthCommandHandler(
+            new DictionaryEnvironmentReader(),
+            officialStore,
+            officialStore,
+            new RecordingSecretInputReader("unused"),
+            officialConsole,
+            officialOptions);
+
+        Assert.Equal(ExitCodes.Success, await officialHandler.HandleAsync("status"));
+        Assert.Contains(
+            "API credential is configured for the current model endpoint.",
+            officialConsole.StandardOutput.ToString(),
+            StringComparison.Ordinal);
+
+        Assert.Equal(ExitCodes.Success, await officialHandler.HandleAsync("clear"));
+        Assert.Null(officialStore.LegacyCredential);
+        Assert.Equal(1, officialStore.DeleteLegacyCount);
+
+        var customConsole = new TestConsole(isInputRedirected: false);
+        var customStore = new RecordingCredentialStore
+        {
+            LegacyCredential = "legacy-key",
+        };
+        var customOptions = GenericOptions(
+            "https://provider.example/v1",
+            "PROVIDER_API_KEY");
+        var customHandler = new AuthCommandHandler(
+            new DictionaryEnvironmentReader(),
+            customStore,
+            customStore,
+            new RecordingSecretInputReader("unused"),
+            customConsole,
+            customOptions);
+
+        Assert.Equal(ExitCodes.Success, await customHandler.HandleAsync("status"));
+        Assert.Contains(
+            "API credential is not configured for the current model endpoint.",
+            customConsole.StandardOutput.ToString(),
+            StringComparison.Ordinal);
+        Assert.Equal(ExitCodes.Success, await customHandler.HandleAsync("clear"));
+        Assert.Equal("legacy-key", customStore.LegacyCredential);
+        Assert.Equal(0, customStore.DeleteLegacyCount);
     }
 
     [Fact]
@@ -357,7 +476,9 @@ public sealed class CredentialCommandTests
         };
     }
 
-    private sealed class RecordingCredentialStore : IProviderCredentialStore
+    private sealed class RecordingCredentialStore :
+        IProviderCredentialStore,
+        ILegacyProviderCredentialStore
     {
         private readonly Dictionary<string, string> _scoped = new(StringComparer.Ordinal);
 
@@ -381,30 +502,11 @@ public sealed class CredentialCommandTests
 
         public int DeleteCount { get; private set; }
 
-        public Task<string?> GetAsync(CancellationToken cancellationToken = default)
-        {
-            return GetAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
-        }
+        public string? LegacyCredential { get; set; }
 
-        public Task SaveAsync(
-            string credential,
-            CancellationToken cancellationToken = default)
-        {
-            return SaveAsync(
-                ProviderCredentialScope.XiaomiDefault,
-                credential,
-                cancellationToken);
-        }
+        public int GetLegacyCount { get; private set; }
 
-        public Task DeleteAsync(CancellationToken cancellationToken = default)
-        {
-            return DeleteAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
-        }
-
-        public Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
-        {
-            return ExistsAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
-        }
+        public int DeleteLegacyCount { get; private set; }
 
         public Task<string?> GetAsync(
             ProviderCredentialScope scope,
@@ -441,6 +543,27 @@ public sealed class CredentialCommandTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_scoped.ContainsKey(scope.CanonicalValue));
+        }
+
+        public Task<string?> GetLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            GetLegacyCount++;
+            return Task.FromResult(LegacyCredential);
+        }
+
+        public Task DeleteLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            LegacyCredential = null;
+            DeleteLegacyCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> LegacyExistsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(LegacyCredential is not null);
         }
     }
 

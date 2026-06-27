@@ -18,6 +18,8 @@ public sealed class XiaomiModelOptions
 
     public TimeSpan StreamIdleTimeout { get; set; } = TimeSpan.FromMinutes(1);
 
+    public TimeSpan ErrorBodyReadTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
     public void Validate()
     {
         ToOpenAiCompatibleOptions().Validate();
@@ -39,6 +41,7 @@ public sealed class XiaomiModelOptions
             IncludeThinkingConfiguration = true,
             FirstByteTimeout = FirstByteTimeout,
             StreamIdleTimeout = StreamIdleTimeout,
+            ErrorBodyReadTimeout = ErrorBodyReadTimeout,
         };
     }
 }

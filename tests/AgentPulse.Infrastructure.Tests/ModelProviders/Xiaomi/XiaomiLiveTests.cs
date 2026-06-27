@@ -12,8 +12,16 @@ public sealed class XiaomiLiveTests
     {
         var credential = Environment.GetEnvironmentVariable("MIMO_API_KEY")!.Trim();
         var session = new EnvironmentCredentialSession(credential);
+        using var handler = new HttpClientHandler
+        {
+            AllowAutoRedirect = false,
+        };
+        using var httpClient = new HttpClient(handler)
+        {
+            Timeout = Timeout.InfiniteTimeSpan,
+        };
         var client = new XiaomiChatModelClient(
-            new SingleHttpClientFactory(new HttpClient { Timeout = Timeout.InfiniteTimeSpan }),
+            new SingleHttpClientFactory(httpClient),
             new XiaomiModelOptions
             {
                 MaxCompletionTokens = 16,

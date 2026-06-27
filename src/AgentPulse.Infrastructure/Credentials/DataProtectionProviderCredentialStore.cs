@@ -4,7 +4,9 @@ using Microsoft.AspNetCore.DataProtection;
 
 namespace AgentPulse.Infrastructure.Credentials;
 
-public sealed class DataProtectionProviderCredentialStore : IProviderCredentialStore
+public sealed class DataProtectionProviderCredentialStore :
+    IProviderCredentialStore,
+    ILegacyProviderCredentialStore
 {
     private const string LegacyPurpose = "AgentPulse.ProviderCredential.v1";
     private const string ScopedPurpose = "AgentPulse.ProviderCredential.v2";
@@ -51,104 +53,41 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
         _legacyProtector = _provider.CreateProtector(LegacyPurpose);
     }
 
-    public Task<string?> GetAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetAsync(
+        ProviderCredentialScope scope,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         return ReadCredentialAsync(
-            _legacyCredentialPath,
-            _legacyProtector,
-            "The stored Xiaomi MiMo credential",
+            GetScopedCredentialPath(scope),
+            GetScopedProtector(scope),
+            "The stored model endpoint credential",
             cancellationToken);
     }
 
     public Task SaveAsync(
+        ProviderCredentialScope scope,
         string credential,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(scope);
         return WriteCredentialAsync(
-            _legacyCredentialPath,
-            _legacyProtector,
-            credential,
-            "The Xiaomi MiMo credential",
-            cancellationToken);
-    }
-
-    public Task DeleteAsync(CancellationToken cancellationToken = default)
-    {
-        return DeleteFileAsync(
-            _legacyCredentialPath,
-            "The stored Xiaomi MiMo credential",
-            cancellationToken);
-    }
-
-    public Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(File.Exists(_legacyCredentialPath));
-    }
-
-    public async Task<string?> GetAsync(
-        ProviderCredentialScope scope,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(scope);
-        var scopedPath = GetScopedCredentialPath(scope);
-        var scopedCredential = await ReadCredentialAsync(
-            scopedPath,
-            GetScopedProtector(scope),
-            "The stored model endpoint credential",
-            cancellationToken);
-
-        if (scopedCredential is not null || !scope.IsOfficialXiaomi)
-        {
-            return scopedCredential;
-        }
-
-        return await ReadCredentialAsync(
-            _legacyCredentialPath,
-            _legacyProtector,
-            "The legacy Xiaomi MiMo credential",
-            cancellationToken);
-    }
-
-    public async Task SaveAsync(
-        ProviderCredentialScope scope,
-        string credential,
-        CancellationToken cancellationToken = default)
-    {
-        ArgumentNullException.ThrowIfNull(scope);
-        await WriteCredentialAsync(
             GetScopedCredentialPath(scope),
             GetScopedProtector(scope),
             credential,
             "The model endpoint credential",
             cancellationToken);
-
-        if (scope.IsOfficialXiaomi)
-        {
-            await DeleteFileAsync(
-                _legacyCredentialPath,
-                "The legacy Xiaomi MiMo credential",
-                cancellationToken);
-        }
     }
 
-    public async Task DeleteAsync(
+    public Task DeleteAsync(
         ProviderCredentialScope scope,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(scope);
-        await DeleteFileAsync(
+        return DeleteFileAsync(
             GetScopedCredentialPath(scope),
             "The stored model endpoint credential",
             cancellationToken);
-
-        if (scope.IsOfficialXiaomi)
-        {
-            await DeleteFileAsync(
-                _legacyCredentialPath,
-                "The legacy Xiaomi MiMo credential",
-                cancellationToken);
-        }
     }
 
     public Task<bool> ExistsAsync(
@@ -157,9 +96,42 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
     {
         ArgumentNullException.ThrowIfNull(scope);
         cancellationToken.ThrowIfCancellationRequested();
-        var exists = File.Exists(GetScopedCredentialPath(scope)) ||
-                     (scope.IsOfficialXiaomi && File.Exists(_legacyCredentialPath));
-        return Task.FromResult(exists);
+        return Task.FromResult(File.Exists(GetScopedCredentialPath(scope)));
+    }
+
+    public Task<string?> GetLegacyAsync(CancellationToken cancellationToken = default)
+    {
+        return ReadCredentialAsync(
+            _legacyCredentialPath,
+            _legacyProtector,
+            "The legacy Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public Task DeleteLegacyAsync(CancellationToken cancellationToken = default)
+    {
+        return DeleteFileAsync(
+            _legacyCredentialPath,
+            "The legacy Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public Task<bool> LegacyExistsAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(File.Exists(_legacyCredentialPath));
+    }
+
+    public Task SaveLegacyAsync(
+        string credential,
+        CancellationToken cancellationToken = default)
+    {
+        return WriteCredentialAsync(
+            _legacyCredentialPath,
+            _legacyProtector,
+            credential,
+            "The legacy Xiaomi MiMo credential",
+            cancellationToken);
     }
 
     private async Task<string?> ReadCredentialAsync(

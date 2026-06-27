@@ -16,13 +16,14 @@ internal static partial class OpenAiCompatibleProviderErrorParser
         HttpResponseMessage response,
         string credential,
         ChatModelRequest request,
+        TimeSpan readTimeout,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(response);
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
         ArgumentNullException.ThrowIfNull(request);
 
-        var body = await ReadLimitedBodyAsync(response, cancellationToken);
+        var body = await ReadLimitedBodyAsync(response, readTimeout, cancellationToken);
         var parsed = ParseBody(body.Value);
         var sensitiveValues = request.Messages
             .Select(static message => message.Content)
@@ -79,11 +80,17 @@ internal static partial class OpenAiCompatibleProviderErrorParser
 
     private static async Task<ErrorBody> ReadLimitedBodyAsync(
         HttpResponseMessage response,
+        TimeSpan readTimeout,
         CancellationToken cancellationToken)
     {
+        using var readCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        readCancellation.CancelAfter(readTimeout);
+
         try
         {
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using var stream = await response.Content.ReadAsStreamAsync(
+                readCancellation.Token);
             var buffer = new byte[4096];
             using var output = new MemoryStream();
             var truncated = false;
@@ -99,13 +106,13 @@ internal static partial class OpenAiCompatibleProviderErrorParser
 
                 var read = await stream.ReadAsync(
                     buffer.AsMemory(0, Math.Min(buffer.Length, remaining)),
-                    cancellationToken);
+                    readCancellation.Token);
                 if (read == 0)
                 {
                     break;
                 }
 
-                await output.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                await output.WriteAsync(buffer.AsMemory(0, read), readCancellation.Token);
             }
 
             if (output.Length > MaximumErrorBodyBytes)
@@ -123,6 +130,14 @@ internal static partial class OpenAiCompatibleProviderErrorParser
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (OperationCanceledException exception)
+        {
+            throw new ModelProviderException(
+                ModelProviderErrorCode.Timeout,
+                $"The provider error body was not received before the configured timeout of {readTimeout}.",
+                ModelFailureStage.BeforeFirstToken,
+                exception);
         }
         catch (Exception exception) when (
             exception is IOException or HttpRequestException)

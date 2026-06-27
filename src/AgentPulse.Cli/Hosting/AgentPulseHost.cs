@@ -11,7 +11,6 @@ using AgentPulse.Infrastructure;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
-using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Processes;
 using AgentPulse.Infrastructure.ProjectContexts;
@@ -27,18 +26,24 @@ public static class AgentPulseHost
 {
     public static HostApplicationBuilder CreateBuilder(
         IConsole? console = null,
-        Action<IConfigurationBuilder>? configureConfiguration = null)
+        Action<IConfigurationBuilder>? configureConfiguration = null,
+        string? contentRootPath = null,
+        string? environmentName = null)
     {
-        var environmentName = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+        environmentName ??= Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
         if (string.IsNullOrWhiteSpace(environmentName))
         {
             environmentName = Environments.Production;
         }
 
+        contentRootPath = string.IsNullOrWhiteSpace(contentRootPath)
+            ? AppContext.BaseDirectory
+            : Path.GetFullPath(contentRootPath);
+
         var settings = new HostApplicationBuilderSettings
         {
             ApplicationName = typeof(AgentPulseHost).Assembly.GetName().Name,
-            ContentRootPath = AppContext.BaseDirectory,
+            ContentRootPath = contentRootPath,
             EnvironmentName = environmentName,
             Args = Array.Empty<string>(),
             DisableDefaults = true,
@@ -46,7 +51,7 @@ public static class AgentPulseHost
 
         var builder = Host.CreateApplicationBuilder(settings);
         builder.Configuration
-            .SetBasePath(AppContext.BaseDirectory)
+            .SetBasePath(contentRootPath)
             .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
             .AddJsonFile(
                 $"appsettings.{environmentName}.json",
@@ -95,16 +100,6 @@ public static class AgentPulseHost
         modelOptions.Validate();
         var credentialScope = modelOptions.CreateCredentialScope();
 
-        var xiaomiCompatibilityOptions = new XiaomiModelOptions
-        {
-            BaseUrl = modelOptions.BaseUrl,
-            Model = modelOptions.Model,
-            MaxCompletionTokens = modelOptions.MaxCompletionTokens,
-            ThinkingMode = modelOptions.ThinkingMode,
-            FirstByteTimeout = modelOptions.FirstByteTimeout,
-            StreamIdleTimeout = modelOptions.StreamIdleTimeout,
-        };
-
         var persistenceOptions = new PersistenceOptions();
         builder.Configuration.GetSection(PersistenceOptions.SectionName).Bind(persistenceOptions);
         var applicationDataPathProvider = new ApplicationDataPathProvider();
@@ -115,7 +110,6 @@ public static class AgentPulseHost
         builder.Services.AddSingleton(streamingRunOptions);
         builder.Services.AddSingleton(modelOptions);
         builder.Services.AddSingleton(credentialScope);
-        builder.Services.AddSingleton(xiaomiCompatibilityOptions);
         builder.Services.AddSingleton(persistenceOptions);
         builder.Services.AddSingleton<IApplicationDataPathProvider>(applicationDataPathProvider);
         builder.Services.AddSingleton(serviceProvider =>

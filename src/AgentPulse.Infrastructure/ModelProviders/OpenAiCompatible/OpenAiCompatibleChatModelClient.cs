@@ -23,7 +23,8 @@ public sealed class OpenAiCompatibleChatModelClient(
         ArgumentNullException.ThrowIfNull(request);
         options.Validate();
 
-        var credential = credentialSession.GetRequiredCredential();
+        var credential = OpenAiCompatibleCredentialValidator.ValidateAndNormalize(
+            credentialSession.GetRequiredCredential());
         var requestDto = OpenAiCompatibleChatRequestMapper.Map(request, options);
         var requestJson = JsonSerializer.Serialize(requestDto);
         var endpoint = OpenAiCompatibleEndpointBuilder.Build(
@@ -37,54 +38,51 @@ public sealed class OpenAiCompatibleChatModelClient(
         requestMessage.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         ApplyAuthentication(requestMessage, credential);
 
+        using var firstByteCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken);
+        firstByteCancellation.CancelAfter(options.FirstByteTimeout);
+
         HttpResponseMessage response;
-        using (var firstByteCancellation = CancellationTokenSource.CreateLinkedTokenSource(
-                   cancellationToken))
+        try
         {
-            firstByteCancellation.CancelAfter(options.FirstByteTimeout);
-            try
-            {
-                var client = httpClientFactory.CreateClient(HttpClientName);
-                response = await client.SendAsync(
-                    requestMessage,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    firstByteCancellation.Token);
-            }
-            catch (OperationCanceledException exception)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                throw new ModelProviderOperationCanceledException(
-                    ModelFailureStage.BeforeFirstToken,
-                    cancellationToken,
-                    exception);
-            }
-            catch (OperationCanceledException exception)
-            {
-                throw new ModelProviderException(
-                    ModelProviderErrorCode.Timeout,
-                    $"The model endpoint did not respond before the first-byte timeout of {options.FirstByteTimeout}.",
-                    ModelFailureStage.BeforeFirstToken,
-                    exception);
-            }
-            catch (HttpRequestException exception)
-            {
-                throw new ModelProviderException(
-                    ModelProviderErrorCode.Unavailable,
-                    "The model endpoint could not be reached.",
-                    ModelFailureStage.BeforeFirstToken,
-                    exception);
-            }
+            var client = httpClientFactory.CreateClient(HttpClientName);
+            response = await client.SendAsync(
+                requestMessage,
+                HttpCompletionOption.ResponseHeadersRead,
+                firstByteCancellation.Token);
+        }
+        catch (OperationCanceledException exception)
+            when (cancellationToken.IsCancellationRequested)
+        {
+            throw new ModelProviderOperationCanceledException(
+                ModelFailureStage.BeforeFirstToken,
+                cancellationToken,
+                exception);
+        }
+        catch (OperationCanceledException exception)
+        {
+            throw CreateFirstByteTimeoutException(exception);
+        }
+        catch (HttpRequestException exception)
+        {
+            throw new ModelProviderException(
+                ModelProviderErrorCode.Unavailable,
+                "The model endpoint could not be reached.",
+                ModelFailureStage.BeforeFirstToken,
+                exception);
         }
 
         using (response)
         {
             if (IsRedirect(response.StatusCode))
             {
+                DisableFirstByteDeadline(firstByteCancellation);
                 throw OpenAiCompatibleProviderErrorParser.CreateRedirectException(response, credential);
             }
 
             if (!response.IsSuccessStatusCode)
             {
+                DisableFirstByteDeadline(firstByteCancellation);
                 ModelProviderException error;
                 try
                 {
@@ -92,6 +90,7 @@ public sealed class OpenAiCompatibleChatModelClient(
                         response,
                         credential,
                         request,
+                        options.ErrorBodyReadTimeout,
                         cancellationToken);
                 }
                 catch (OperationCanceledException exception)
@@ -111,23 +110,11 @@ public sealed class OpenAiCompatibleChatModelClient(
                 throw error;
             }
 
-            try
-            {
-                await credentialSession.MarkAcceptedAsync(cancellationToken);
-            }
-            catch (OperationCanceledException exception)
-                when (cancellationToken.IsCancellationRequested)
-            {
-                throw new ModelProviderOperationCanceledException(
-                    ModelFailureStage.BeforeFirstToken,
-                    cancellationToken,
-                    exception);
-            }
-
             Stream responseStream;
             try
             {
-                responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                responseStream = await response.Content.ReadAsStreamAsync(
+                    firstByteCancellation.Token);
             }
             catch (OperationCanceledException exception)
                 when (cancellationToken.IsCancellationRequested)
@@ -136,6 +123,10 @@ public sealed class OpenAiCompatibleChatModelClient(
                     ModelFailureStage.BeforeFirstToken,
                     cancellationToken,
                     exception);
+            }
+            catch (OperationCanceledException exception)
+            {
+                throw CreateFirstByteTimeoutException(exception);
             }
             catch (Exception exception) when (exception is IOException or HttpRequestException)
             {
@@ -146,14 +137,17 @@ public sealed class OpenAiCompatibleChatModelClient(
                     exception);
             }
 
-            await using var timedStream = new TimedReadStream(
+            await using var timedStream = new DeadlineReadStream(
                 responseStream,
+                firstByteCancellation.Token,
                 options.FirstByteTimeout,
-                options.StreamIdleTimeout);
+                options.StreamIdleTimeout,
+                () => DisableFirstByteDeadline(firstByteCancellation));
             await using var enumerator = sseParser
                 .ParseAsync(timedStream, cancellationToken)
                 .GetAsyncEnumerator(cancellationToken);
             var firstTokenSeen = false;
+            var credentialAccepted = false;
 
             while (true)
             {
@@ -194,6 +188,23 @@ public sealed class OpenAiCompatibleChatModelClient(
                     firstTokenSeen = true;
                 }
 
+                if (!credentialAccepted)
+                {
+                    try
+                    {
+                        await credentialSession.MarkAcceptedAsync(cancellationToken);
+                        credentialAccepted = true;
+                    }
+                    catch (OperationCanceledException exception)
+                        when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw new ModelProviderOperationCanceledException(
+                            GetFailureStage(firstTokenSeen),
+                            cancellationToken,
+                            exception);
+                    }
+                }
+
                 yield return streamEvent;
             }
         }
@@ -213,8 +224,10 @@ public sealed class OpenAiCompatibleChatModelClient(
                         options.ApiKeyHeaderName.Trim(),
                         credential))
                 {
-                    throw new InvalidOperationException(
-                        "The configured API key header could not be added to the request.");
+                    throw new ModelProviderException(
+                        ModelProviderErrorCode.Authentication,
+                        "The configured API credential header could not be added safely.",
+                        ModelFailureStage.BeforeFirstToken);
                 }
 
                 break;
@@ -222,6 +235,20 @@ public sealed class OpenAiCompatibleChatModelClient(
                 throw new InvalidOperationException(
                     "The configured authentication mode is not supported.");
         }
+    }
+
+    private ModelProviderException CreateFirstByteTimeoutException(Exception exception)
+    {
+        return new ModelProviderException(
+            ModelProviderErrorCode.Timeout,
+            $"The model endpoint did not send the first response byte before the configured timeout of {options.FirstByteTimeout}.",
+            ModelFailureStage.BeforeFirstToken,
+            exception);
+    }
+
+    private static void DisableFirstByteDeadline(CancellationTokenSource source)
+    {
+        source.CancelAfter(Timeout.InfiniteTimeSpan);
     }
 
     private static ModelFailureStage GetFailureStage(bool firstTokenSeen)

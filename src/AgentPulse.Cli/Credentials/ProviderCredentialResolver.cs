@@ -11,6 +11,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
 
     private readonly IEnvironmentVariableReader _environmentVariables;
     private readonly IProviderCredentialStore _credentialStore;
+    private readonly ILegacyProviderCredentialStore _legacyCredentialStore;
     private readonly ISecretInputReader _secretInputReader;
     private readonly IConsole _console;
     private readonly OpenAiCompatibleModelOptions _options;
@@ -24,6 +25,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
         : this(
             environmentVariables,
             credentialStore,
+            NullLegacyProviderCredentialStore.Instance,
             secretInputReader,
             console,
             new OpenAiCompatibleModelOptions())
@@ -36,11 +38,30 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
         ISecretInputReader secretInputReader,
         IConsole console,
         OpenAiCompatibleModelOptions options)
+        : this(
+            environmentVariables,
+            credentialStore,
+            NullLegacyProviderCredentialStore.Instance,
+            secretInputReader,
+            console,
+            options)
+    {
+    }
+
+    public ProviderCredentialResolver(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ILegacyProviderCredentialStore legacyCredentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console,
+        OpenAiCompatibleModelOptions options)
     {
         _environmentVariables = environmentVariables ??
             throw new ArgumentNullException(nameof(environmentVariables));
         _credentialStore = credentialStore ??
             throw new ArgumentNullException(nameof(credentialStore));
+        _legacyCredentialStore = legacyCredentialStore ??
+            throw new ArgumentNullException(nameof(legacyCredentialStore));
         _secretInputReader = secretInputReader ??
             throw new ArgumentNullException(nameof(secretInputReader));
         _console = console ?? throw new ArgumentNullException(nameof(console));
@@ -73,6 +94,19 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
             return;
         }
 
+        if (_scope.IsOfficialXiaomi)
+        {
+            var legacyCredential = Normalize(
+                await _legacyCredentialStore.GetLegacyAsync(cancellationToken));
+            if (legacyCredential is not null)
+            {
+                credentialSession.Set(
+                    legacyCredential,
+                    ProviderCredentialSource.LegacyStored);
+                return;
+            }
+        }
+
         if (_console.IsInputRedirected)
         {
             throw new CredentialResolutionException(
@@ -101,5 +135,28 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
     private static string? Normalize(string? value)
     {
         return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    }
+
+    private sealed class NullLegacyProviderCredentialStore : ILegacyProviderCredentialStore
+    {
+        public static readonly NullLegacyProviderCredentialStore Instance = new();
+
+        public Task<string?> GetLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult<string?>(null);
+        }
+
+        public Task DeleteLegacyAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> LegacyExistsAsync(CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(false);
+        }
     }
 }

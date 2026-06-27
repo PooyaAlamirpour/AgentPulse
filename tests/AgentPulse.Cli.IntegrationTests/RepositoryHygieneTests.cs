@@ -59,10 +59,21 @@ public sealed class RepositoryHygieneTests
     {
         var repositoryRoot = FindRepositoryRoot();
         var licensePath = Path.Combine(repositoryRoot, "LICENSE");
-        var readme = File.ReadAllText(Path.Combine(repositoryRoot, "README.md"));
-        var license = File.ReadAllText(licensePath);
+        var readmePath = Path.Combine(repositoryRoot, "README.md");
+        var propsPath = Path.Combine(repositoryRoot, "Directory.Build.props");
 
-        Assert.True(File.Exists(licensePath));
+        Assert.True(
+            File.Exists(licensePath),
+            "Expected repository file LICENSE to exist.");
+        Assert.True(
+            File.Exists(readmePath),
+            "Expected repository file README.md to exist.");
+        Assert.True(
+            File.Exists(propsPath),
+            "Expected repository file Directory.Build.props to exist.");
+
+        var license = File.ReadAllText(licensePath);
+        var readme = File.ReadAllText(readmePath);
         Assert.Contains("MIT License", license, StringComparison.Ordinal);
         Assert.Contains("Copyright (c) 2026 Pooya Alamirpour", license, StringComparison.Ordinal);
         Assert.Contains("## Maintainer", readme, StringComparison.Ordinal);
@@ -84,7 +95,11 @@ public sealed class RepositoryHygieneTests
     public void Central_build_metadata_identifies_author_and_mit_license()
     {
         var repositoryRoot = FindRepositoryRoot();
-        var props = File.ReadAllText(Path.Combine(repositoryRoot, "Directory.Build.props"));
+        var propsPath = Path.Combine(repositoryRoot, "Directory.Build.props");
+        Assert.True(
+            File.Exists(propsPath),
+            "Expected repository file Directory.Build.props to exist.");
+        var props = File.ReadAllText(propsPath);
 
         Assert.Contains("<Authors>Pooya Alamirpour</Authors>", props, StringComparison.Ordinal);
         Assert.Contains("<PackageLicenseExpression>MIT</PackageLicenseExpression>", props, StringComparison.Ordinal);

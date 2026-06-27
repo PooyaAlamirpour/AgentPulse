@@ -1,4 +1,5 @@
 using System.Text;
+using System.Xml.Linq;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Hosting;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
@@ -14,13 +15,20 @@ public sealed class ModelConfigurationTests
     {
         const string baseUrlVariable = "AgentPulse__Model__BaseUrl";
         const string modelVariable = "AgentPulse__Model__Model";
+        const string errorBodyTimeoutVariable =
+            "AgentPulse__Model__ErrorBodyReadTimeout";
         var originalBaseUrl = Environment.GetEnvironmentVariable(baseUrlVariable);
         var originalModel = Environment.GetEnvironmentVariable(modelVariable);
+        var originalErrorBodyTimeout = Environment.GetEnvironmentVariable(
+            errorBodyTimeoutVariable);
 
         try
         {
             Environment.SetEnvironmentVariable(baseUrlVariable, "https://environment.example/v1");
             Environment.SetEnvironmentVariable(modelVariable, "environment-model");
+            Environment.SetEnvironmentVariable(
+                errorBodyTimeoutVariable,
+                "00:00:07");
             using var baseJson = JsonStream(
                 """
                 {
@@ -29,7 +37,8 @@ public sealed class ModelConfigurationTests
                       "BaseUrl": "https://json.example/v1",
                       "Model": "json-model",
                       "ChatCompletionsPath": "json/chat/completions",
-                      "MaxCompletionTokens": 1024
+                      "MaxCompletionTokens": 1024,
+                      "ErrorBodyReadTimeout": "00:00:09"
                     }
                   }
                 }
@@ -60,12 +69,101 @@ public sealed class ModelConfigurationTests
             Assert.Equal("environment-model", options.Model);
             Assert.Equal("environment/chat/completions", options.ChatCompletionsPath);
             Assert.Equal(1024, options.MaxCompletionTokens);
+            Assert.Equal(TimeSpan.FromSeconds(7), options.ErrorBodyReadTimeout);
         }
         finally
         {
             Environment.SetEnvironmentVariable(baseUrlVariable, originalBaseUrl);
             Environment.SetEnvironmentVariable(modelVariable, originalModel);
+            Environment.SetEnvironmentVariable(
+                errorBodyTimeoutVariable,
+                originalErrorBodyTimeout);
         }
+    }
+
+    [Fact]
+    public void Host_loads_environment_json_and_environment_variable_with_standard_precedence()
+    {
+        const string modelVariable = "AgentPulse__Model__Model";
+        var originalModel = Environment.GetEnvironmentVariable(modelVariable);
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "AgentPulse.ConfigurationTests",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            File.WriteAllText(
+                Path.Combine(root, "appsettings.json"),
+                """
+                {
+                  "AgentPulse": {
+                    "Model": {
+                      "BaseUrl": "https://base-json.example/v1",
+                      "Model": "base-json-model"
+                    }
+                  }
+                }
+                """);
+            File.WriteAllText(
+                Path.Combine(root, "appsettings.Test.json"),
+                """
+                {
+                  "AgentPulse": {
+                    "Model": {
+                      "BaseUrl": "https://environment-json.example/v1",
+                      "Model": "environment-json-model"
+                    }
+                  }
+                }
+                """);
+
+            Environment.SetEnvironmentVariable(modelVariable, null);
+            var environmentBuilder = AgentPulseHost.CreateBuilder(
+                new TestConsole(),
+                contentRootPath: root,
+                environmentName: "Test");
+            Assert.Equal(
+                "https://environment-json.example/v1",
+                environmentBuilder.Configuration[$"{OpenAiCompatibleModelOptions.SectionName}:BaseUrl"]);
+            Assert.Equal(
+                "environment-json-model",
+                environmentBuilder.Configuration[$"{OpenAiCompatibleModelOptions.SectionName}:Model"]);
+
+            Environment.SetEnvironmentVariable(modelVariable, "environment-variable-model");
+            var variableBuilder = AgentPulseHost.CreateBuilder(
+                new TestConsole(),
+                contentRootPath: root,
+                environmentName: "Test");
+            Assert.Equal(
+                "environment-variable-model",
+                variableBuilder.Configuration[$"{OpenAiCompatibleModelOptions.SectionName}:Model"]);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(modelVariable, originalModel);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Cli_project_copies_base_and_environment_appsettings_to_build_and_publish()
+    {
+        var projectPath = Path.Combine(
+            FindRepositoryRoot(),
+            "src",
+            "AgentPulse.Cli",
+            "AgentPulse.Cli.csproj");
+        var project = XDocument.Load(projectPath);
+        var noneItems = project
+            .Descendants("None")
+            .ToDictionary(
+                item => (string?)item.Attribute("Update") ?? string.Empty,
+                StringComparer.Ordinal);
+
+        AssertCopyMetadata(noneItems, "appsettings.json");
+        AssertCopyMetadata(noneItems, "appsettings.*.json");
     }
 
     [Fact]
@@ -87,6 +185,7 @@ public sealed class ModelConfigurationTests
                   "IncludeThinkingConfiguration": false,
                   "FirstByteTimeout": "00:00:12",
                   "StreamIdleTimeout": "00:00:34",
+                  "ErrorBodyReadTimeout": "00:00:09",
                   "ApiKey": "must-not-bind"
                 }
               }
@@ -110,6 +209,7 @@ public sealed class ModelConfigurationTests
         Assert.False(options.IncludeThinkingConfiguration);
         Assert.Equal(TimeSpan.FromSeconds(12), options.FirstByteTimeout);
         Assert.Equal(TimeSpan.FromSeconds(34), options.StreamIdleTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(9), options.ErrorBodyReadTimeout);
         Assert.DoesNotContain(
             typeof(OpenAiCompatibleModelOptions).GetProperties(),
             property => string.Equals(property.Name, "ApiKey", StringComparison.Ordinal));
@@ -154,6 +254,21 @@ public sealed class ModelConfigurationTests
         Assert.Null(section["ApiKey"]);
         Assert.Null(configuration["AgentPulse:Xiaomi:ApiKey"]);
         Assert.Equal("agentpulse", configuration[$"{CliOptions.SectionName}:ApplicationName"]);
+    }
+
+    private static void AssertCopyMetadata(
+        IReadOnlyDictionary<string, XElement> noneItems,
+        string updateValue)
+    {
+        Assert.True(
+            noneItems.TryGetValue(updateValue, out var item),
+            $"Expected CLI project item '{updateValue}' to exist.");
+        Assert.Equal(
+            "PreserveNewest",
+            item.Element("CopyToOutputDirectory")?.Value);
+        Assert.Equal(
+            "PreserveNewest",
+            item.Element("CopyToPublishDirectory")?.Value);
     }
 
     private static MemoryStream JsonStream(string json)

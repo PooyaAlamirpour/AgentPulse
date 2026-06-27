@@ -100,10 +100,10 @@ public sealed class CliApplication(
               {{applicationName}} auth clear
 
             Commands:
-              run          Stream a Xiaomi MiMo response for a prompt from arguments and/or stdin.
-              auth set     Store the Xiaomi MiMo API credential securely for the current user.
-              auth status  Show whether a credential source is configured.
-              auth clear   Remove the stored credential without changing MIMO_API_KEY.
+              run          Stream a response from the configured model endpoint.
+              auth set     Store the API credential for the current model endpoint.
+              auth status  Show the credential status for the current model endpoint.
+              auth clear   Remove the stored credential for the current model endpoint without changing the configured API key environment variable.
             """;
 
         await console.Out.WriteLineAsync(help.AsMemory(), cancellationToken);

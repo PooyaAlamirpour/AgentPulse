@@ -12,6 +12,30 @@ public sealed class CliProcessTests
         Assert.Equal(0, result.ExitCode);
         Assert.Contains("Usage:", result.StandardOutput, StringComparison.Ordinal);
         Assert.Contains("agentpulse run [message...]", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains(
+            "Stream a response from the configured model endpoint.",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Store the API credential for the current model endpoint.",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "Show the credential status for the current model endpoint.",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Xiaomi MiMo " + "response",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "Xiaomi MiMo API " + "credential",
+            result.StandardOutput,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "without changing " + "MIMO_API_KEY",
+            result.StandardOutput,
+            StringComparison.Ordinal);
         Assert.DoesNotContain("MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
     }
 
