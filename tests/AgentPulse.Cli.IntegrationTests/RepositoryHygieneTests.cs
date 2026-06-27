@@ -27,30 +27,31 @@ public sealed class RepositoryHygieneTests
     }
 
     [Fact]
-    public void Active_documentation_marks_phase_six_complete_without_runtime_fake_client_plan()
+    public void Active_documentation_marks_phase_seven_complete_with_single_generic_runtime_client()
     {
         var repositoryRoot = FindRepositoryRoot();
         var readme = File.ReadAllText(Path.Combine(repositoryRoot, "README.md"));
         var map = File.ReadAllText(Path.Combine(repositoryRoot, "docs", "node-to-dotnet-map.md"));
 
-        Assert.Contains("| 6 | ✅ |", readme, StringComparison.Ordinal);
-        Assert.Contains("Phase 6", readme, StringComparison.Ordinal);
+        Assert.Contains("| 7 | ✅ |", readme, StringComparison.Ordinal);
+        Assert.Contains("OpenAI-Compatible Provider Generalization and Hardening", readme, StringComparison.Ordinal);
+        Assert.Contains("OpenAiCompatibleChatModelClient", readme, StringComparison.Ordinal);
         Assert.DoesNotContain("FakeChatModelClient", map, StringComparison.Ordinal);
         Assert.DoesNotContain("Provider واقعی فقط در فاز ۷", map, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Session_documentation_keeps_cli_session_option_in_phase_seven_only()
+    public void Session_documentation_keeps_cli_session_option_in_phase_eight_only()
     {
         var repositoryRoot = FindRepositoryRoot();
         var map = File.ReadAllText(Path.Combine(repositoryRoot, "docs", "node-to-dotnet-map.md"));
         var phaseFour = ExtractSection(map, "### فاز ۴", "### فاز ۵");
-        var phaseSeven = ExtractSection(map, "### فاز ۷", "### فاز ۸");
+        var phaseEight = ExtractSection(map, "### فاز ۸", "### فاز ۹");
 
         Assert.Contains("در سطح Application", phaseFour, StringComparison.Ordinal);
         Assert.DoesNotContain("--session", phaseFour, StringComparison.Ordinal);
-        Assert.Contains("--session", phaseSeven, StringComparison.Ordinal);
-        Assert.Contains("آینده", phaseSeven, StringComparison.Ordinal);
+        Assert.Contains("--session", phaseEight, StringComparison.Ordinal);
+        Assert.Contains("آینده", phaseEight, StringComparison.Ordinal);
     }
 
     [Fact]

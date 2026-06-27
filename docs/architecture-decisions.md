@@ -117,3 +117,67 @@ Live Test فقط وقتی اجرا می‌شود که هم `MIMO_API_KEY` موج
 ### Status
 
 Accepted
+
+---
+
+## ADR-002 — Generalize the Xiaomi transport into a single OpenAI-compatible client
+
+### Context
+
+فاز ۶ Transport واقعی Xiaomi MiMo را با `HttpClient`، Chat Completions، SSE افزایشی، Timeout، Cancellation و Credential امن تکمیل کرد. Protocol استفاده‌شده OpenAI-compatible بود، اما نام‌گذاری و بعضی تنظیمات Runtime به Xiaomi وابسته مانده بود. عمومی‌کردن `BaseUrl` بدون تغییر مدل امنیت Credential می‌توانست Credential ذخیره‌شده Xiaomi را پس از تغییر Configuration به Host دیگری ارسال کند. دنبال‌کردن Redirect نیز می‌توانست Header احراز هویت را خارج از Endpoint مورد اعتماد ببرد. همچنین خطاهای HTTP، Protocol، Timeout و Cancellation Contract عمومی کافی برای تشخیص وقوع قبل یا بعد از اولین Delta نداشتند.
+
+### Decision
+
+Runtime فقط یک Implementation فعال از `IChatModelClient` دارد: `OpenAiCompatibleChatModelClient`.
+
+Xiaomi MiMo از طریق مقادیر پیش‌فرض `OpenAiCompatibleModelOptions` باقی می‌ماند و Provider Registry، Model Catalog یا انتخاب Provider با CLI flag ایجاد نمی‌شود. Options عمومی Base URL، مسیر نسبی Chat Completions، Model، دو حالت `Bearer` و `ApiKeyHeader`، نام Environment Variable، token limit، Thinking extension و Timeoutها را Bind می‌کند. API Key Property در Options وجود ندارد.
+
+Transport از یک `OpenAiCompatibleSseParser` استفاده می‌کند. Adapterهای Xiaomi فقط برای سازگاری Source و Testهای فاز ۶ نگه داشته می‌شوند و Parser یا Client موازی در Composition Root ثبت نمی‌کنند.
+
+Credential ذخیره‌شده به Scope زیر وابسته است:
+
+```text
+normalized scheme + normalized host + effective port + authentication mode + API-key header name when applicable
+```
+
+Model و Path در Scope نیستند. نام فایل Credential از SHA-256 همین Scope غیرمحرمانه ساخته می‌شود و خود Secret همچنان با Data Protection محافظت می‌شود. Credential قدیمی بدون Scope فقط برای Endpoint رسمی Xiaomi قابل خواندن است و پس از پذیرش موفق به فرمت Scoped منتقل می‌شود.
+
+`HttpClientHandler.AllowAutoRedirect` برابر `false` است. مسیر Chat Completions باید Relative و بدون Origin، Query، Fragment یا Traversal باشد. Remote HTTP رد می‌شود و HTTP فقط برای Loopback مجاز است.
+
+خطاها با Taxonomy عمومی `Authentication`, `PermissionDenied`, `RateLimited`, `InvalidRequest`, `Unavailable`, `Timeout`, `Protocol`, `InvalidResponse`, `Cancelled`, و `Unknown` نمایش داده می‌شوند. هر Failure مرحله `BeforeFirstToken` یا `AfterFirstToken` دارد که هنگام همان Stream و بر اساس دریافت اولین `TextDelta` ثبت می‌شود.
+
+### Consequences
+
+- Xiaomi MiMo بدون Command یا Registry جدید همچنان Default Provider است.
+- Endpointهای OpenAI-compatible با Configuration استاندارد .NET قابل استفاده‌اند.
+- Application contracts مستقل از Xiaomi باقی می‌مانند.
+- Credential یک Origin یا Authentication profile به دیگری نشت نمی‌کند.
+- تغییر Model یا Base path در همان Origin باعث ایجاد Credential غیرضروری جدید نمی‌شود.
+- Redirect پاسخ Provider به‌جای Follow شدن به خطای Sanitized تبدیل می‌شود.
+- Error body محدود خوانده می‌شود و Request body، Prompt، History، API Key و تمام Headerها وارد Exception نمی‌شوند.
+- Orchestrator سیاست حفظ متن جزئی فاز ۶ را ادامه می‌دهد و Failure stage را از Run جاری دریافت می‌کند، نه از محتوای ذخیره‌شده.
+- تست‌های عادی برای هر دو Profile از HTTP Test Server محلی استفاده می‌کنند و به API واقعی وابسته نیستند.
+
+### Security considerations
+
+- Secret از JSON، Command-line argument و SQLite خوانده یا ذخیره نمی‌شود.
+- Environment Variable از Credential Store اولویت بالاتری دارد و هرگز در Store کپی نمی‌شود.
+- Header name در حالت `ApiKeyHeader` اعتبارسنجی می‌شود و Headerهای حساس یا transport-controlled رد می‌شوند.
+- Base URL و Path نمی‌توانند Origin نهایی را تغییر دهند.
+- Redirectهای `301`, `302`, `303`, `307`, و `308` دنبال نمی‌شوند.
+- Location و URLهای Error بدون Query، Fragment و UserInfo نگه داشته می‌شوند.
+- Legacy Credential برای Host سفارشی قابل مشاهده یا Migration نیست.
+- Scope، file name، log و exception شامل API Key، hash مشتق از API Key یا metadata آن نیستند.
+
+### Alternatives considered
+
+- حفظ `XiaomiChatModelClient` به‌عنوان Client اصلی و ساخت Client دوم عمومی: رد شد، چون Protocol و Parser را Duplicate و Composition Root را چندمسیره می‌کرد.
+- Provider Registry و Model Catalog: رد شد، چون برای یک Transport قابل تنظیم ضروری نیست و خارج از Scope فاز ۷ است.
+- استفاده از OpenAI SDK یا Xiaomi SDK: رد شد، چون کنترل دقیق SSE، Redirect، Timeout، Error sanitization و وابستگی‌ها را کاهش می‌داد.
+- Scope بر اساس Model یا Base path: رد شد، چون یک Credential معمولاً چند Model و Path همان Origin را پوشش می‌دهد.
+- استفاده از Credential قدیمی برای هر Host پس از تغییر Base URL: رد شد، چون خطر نشت Secret دارد.
+- دنبال‌کردن Redirect و حذف Header در Redirect: رد شد، چون رفتار Handlerها و redirect chain پیچیده است و Fail-closed امن‌تر است.
+
+### Status
+
+Accepted

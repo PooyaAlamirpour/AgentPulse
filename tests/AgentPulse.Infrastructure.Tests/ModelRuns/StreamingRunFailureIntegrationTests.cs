@@ -42,6 +42,8 @@ public sealed class StreamingRunFailureIntegrationTests
             fixture.RunAsync(CancellationToken.None));
 
         Assert.Equal(ModelRunErrorCode.ProviderFailure, exception.Code);
+        var providerException = Assert.IsType<ModelProviderException>(exception.InnerException);
+        Assert.Equal(ModelFailureStage.AfterFirstToken, providerException.FailureStage);
         await fixture.AssertFinalStateAsync("Hel", MessageStatus.Failed);
     }
 
@@ -62,7 +64,8 @@ public sealed class StreamingRunFailureIntegrationTests
         await Task.Yield();
         throw new ModelProviderException(
             ModelProviderErrorCode.ConnectionFailed,
-            "The local test connection ended.");
+            "The local test connection ended.",
+            ModelFailureStage.AfterFirstToken);
     }
 
     private sealed class Fixture : IAsyncDisposable

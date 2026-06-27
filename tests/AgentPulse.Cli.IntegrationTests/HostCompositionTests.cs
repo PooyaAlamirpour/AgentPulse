@@ -14,6 +14,7 @@ using AgentPulse.Application.Persistence;
 using AgentPulse.Application.SessionRuns;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Credentials;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Application.ProjectContexts;
@@ -68,6 +69,8 @@ public sealed class HostCompositionTests
             Assert.NotNull(host.Services.GetRequiredService<SessionRunOptions>());
             Assert.NotNull(host.Services.GetRequiredService<StreamingRunOptions>());
             Assert.NotNull(host.Services.GetRequiredService<XiaomiModelOptions>());
+            Assert.NotNull(host.Services.GetRequiredService<OpenAiCompatibleModelOptions>());
+            Assert.NotNull(host.Services.GetRequiredService<IOptions<OpenAiCompatibleModelOptions>>());
             Assert.NotNull(host.Services.GetRequiredService<ProviderCredentialStoreOptions>());
             Assert.NotNull(host.Services.GetRequiredService<PersistenceOptions>());
             Assert.NotNull(host.Services.GetRequiredService<IApplicationDataPathProvider>());
@@ -88,7 +91,9 @@ public sealed class HostCompositionTests
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IEndSessionRun>());
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRenewSessionRunLease>());
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IProviderCredentialSession>());
-            Assert.NotNull(scope.ServiceProvider.GetRequiredService<IChatModelClient>());
+            var modelClients = scope.ServiceProvider.GetServices<IChatModelClient>().ToArray();
+            Assert.Single(modelClients);
+            Assert.IsType<OpenAiCompatibleChatModelClient>(modelClients[0]);
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRunPrompt>());
             Assert.NotNull(host.Services.GetRequiredService<IChatModelHistoryPolicy>());
             Assert.NotNull(host.Services.GetRequiredService<IChatModelRequestBuilder>());

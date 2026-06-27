@@ -1,15 +1,52 @@
 using AgentPulse.Cli.Console;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Infrastructure.Credentials;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 
 namespace AgentPulse.Cli.Commands;
 
-public sealed class AuthCommandHandler(
-    IEnvironmentVariableReader environmentVariables,
-    IProviderCredentialStore credentialStore,
-    ISecretInputReader secretInputReader,
-    IConsole console) : IAuthCommandHandler
+public sealed class AuthCommandHandler : IAuthCommandHandler
 {
+    private readonly IEnvironmentVariableReader _environmentVariables;
+    private readonly IProviderCredentialStore _credentialStore;
+    private readonly ISecretInputReader _secretInputReader;
+    private readonly IConsole _console;
+    private readonly OpenAiCompatibleModelOptions _options;
+    private readonly ProviderCredentialScope _scope;
+
+    public AuthCommandHandler(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console)
+        : this(
+            environmentVariables,
+            credentialStore,
+            secretInputReader,
+            console,
+            new OpenAiCompatibleModelOptions())
+    {
+    }
+
+    public AuthCommandHandler(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console,
+        OpenAiCompatibleModelOptions options)
+    {
+        _environmentVariables = environmentVariables ??
+            throw new ArgumentNullException(nameof(environmentVariables));
+        _credentialStore = credentialStore ??
+            throw new ArgumentNullException(nameof(credentialStore));
+        _secretInputReader = secretInputReader ??
+            throw new ArgumentNullException(nameof(secretInputReader));
+        _console = console ?? throw new ArgumentNullException(nameof(console));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _options.Validate();
+        _scope = _options.CreateCredentialScope();
+    }
+
     public async Task<int> HandleAsync(
         string subcommand,
         CancellationToken cancellationToken = default)
@@ -26,87 +63,87 @@ public sealed class AuthCommandHandler(
         }
         catch (SecretInputCancelledException)
         {
-            await console.Error.WriteLineAsync(
+            await _console.Error.WriteLineAsync(
                 "Operation cancelled.".AsMemory(),
                 CancellationToken.None);
-            await console.Error.FlushAsync(CancellationToken.None);
+            await _console.Error.FlushAsync(CancellationToken.None);
             return ExitCodes.Cancelled;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await console.Error.WriteLineAsync(
+            await _console.Error.WriteLineAsync(
                 "Operation cancelled.".AsMemory(),
                 CancellationToken.None);
-            await console.Error.FlushAsync(CancellationToken.None);
+            await _console.Error.FlushAsync(CancellationToken.None);
             return ExitCodes.Cancelled;
         }
         catch (ProviderCredentialStoreException exception)
         {
-            await console.Error.WriteLineAsync(
+            await _console.Error.WriteLineAsync(
                 exception.Message.AsMemory(),
                 cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
+            await _console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
     }
 
     private async Task<int> SetAsync(CancellationToken cancellationToken)
     {
-        if (console.IsInputRedirected)
+        if (_console.IsInputRedirected)
         {
-            await console.Error.WriteLineAsync(
-                "The API key must be entered from an interactive terminal.".AsMemory(),
+            await _console.Error.WriteLineAsync(
+                "The API credential must be entered from an interactive terminal.".AsMemory(),
                 cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
+            await _console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
 
-        await console.Error.WriteAsync(
-            "Enter MIMO_API_KEY: ".AsMemory(),
+        await _console.Error.WriteAsync(
+            $"Enter {_options.ApiKeyEnvironmentVariable}: ".AsMemory(),
             cancellationToken);
-        await console.Error.FlushAsync(cancellationToken);
+        await _console.Error.FlushAsync(cancellationToken);
 
-        var credential = (await secretInputReader.ReadAsync(cancellationToken)).Trim();
+        var credential = (await _secretInputReader.ReadAsync(cancellationToken)).Trim();
         if (string.IsNullOrWhiteSpace(credential))
         {
-            await console.Error.WriteLineAsync(
-                "Xiaomi MiMo API key cannot be empty.".AsMemory(),
+            await _console.Error.WriteLineAsync(
+                "The API credential cannot be empty.".AsMemory(),
                 cancellationToken);
-            await console.Error.FlushAsync(cancellationToken);
+            await _console.Error.FlushAsync(cancellationToken);
             return ExitCodes.Failure;
         }
 
-        await credentialStore.SaveAsync(credential, cancellationToken);
-        await console.Out.WriteLineAsync(
-            "API credential was stored securely.".AsMemory(),
+        await _credentialStore.SaveAsync(_scope, credential, cancellationToken);
+        await _console.Out.WriteLineAsync(
+            "API credential was stored securely for the current model endpoint.".AsMemory(),
             cancellationToken);
-        await console.Out.FlushAsync(cancellationToken);
+        await _console.Out.FlushAsync(cancellationToken);
         return ExitCodes.Success;
     }
 
     private async Task<int> StatusAsync(CancellationToken cancellationToken)
     {
-        var environmentCredential = environmentVariables.Get(
-            ProviderCredentialResolver.EnvironmentVariableName);
+        var environmentCredential = _environmentVariables.Get(
+            _options.ApiKeyEnvironmentVariable);
 
         var message = !string.IsNullOrWhiteSpace(environmentCredential)
-            ? "MIMO_API_KEY environment variable is configured."
-            : await credentialStore.ExistsAsync(cancellationToken)
-                ? "API credential is configured."
-                : "API credential is not configured.";
+            ? "Configured API key environment variable is available."
+            : await _credentialStore.ExistsAsync(_scope, cancellationToken)
+                ? "API credential is configured for the current model endpoint."
+                : "API credential is not configured for the current model endpoint.";
 
-        await console.Out.WriteLineAsync(message.AsMemory(), cancellationToken);
-        await console.Out.FlushAsync(cancellationToken);
+        await _console.Out.WriteLineAsync(message.AsMemory(), cancellationToken);
+        await _console.Out.FlushAsync(cancellationToken);
         return ExitCodes.Success;
     }
 
     private async Task<int> ClearAsync(CancellationToken cancellationToken)
     {
-        await credentialStore.DeleteAsync(cancellationToken);
-        await console.Out.WriteLineAsync(
-            "Stored API credential was cleared.".AsMemory(),
+        await _credentialStore.DeleteAsync(_scope, cancellationToken);
+        await _console.Out.WriteLineAsync(
+            "Stored API credential was cleared for the current model endpoint.".AsMemory(),
             cancellationToken);
-        await console.Out.FlushAsync(cancellationToken);
+        await _console.Out.FlushAsync(cancellationToken);
         return ExitCodes.Success;
     }
 
@@ -114,10 +151,10 @@ public sealed class AuthCommandHandler(
         string subcommand,
         CancellationToken cancellationToken)
     {
-        await console.Error.WriteLineAsync(
+        await _console.Error.WriteLineAsync(
             $"Unknown auth command: {subcommand}".AsMemory(),
             cancellationToken);
-        await console.Error.FlushAsync(cancellationToken);
+        await _console.Error.FlushAsync(cancellationToken);
         return ExitCodes.Failure;
     }
 }

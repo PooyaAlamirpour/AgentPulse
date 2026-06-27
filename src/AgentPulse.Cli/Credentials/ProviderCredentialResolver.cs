@@ -1,15 +1,53 @@
 using AgentPulse.Cli.Console;
 using AgentPulse.Infrastructure.Credentials;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 
 namespace AgentPulse.Cli.Credentials;
 
-public sealed class ProviderCredentialResolver(
-    IEnvironmentVariableReader environmentVariables,
-    IProviderCredentialStore credentialStore,
-    ISecretInputReader secretInputReader,
-    IConsole console) : IProviderCredentialResolver
+public sealed class ProviderCredentialResolver : IProviderCredentialResolver
 {
-    public const string EnvironmentVariableName = "MIMO_API_KEY";
+    public const string EnvironmentVariableName =
+        OpenAiCompatibleModelOptions.XiaomiDefaultApiKeyEnvironmentVariable;
+
+    private readonly IEnvironmentVariableReader _environmentVariables;
+    private readonly IProviderCredentialStore _credentialStore;
+    private readonly ISecretInputReader _secretInputReader;
+    private readonly IConsole _console;
+    private readonly OpenAiCompatibleModelOptions _options;
+    private readonly ProviderCredentialScope _scope;
+
+    public ProviderCredentialResolver(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console)
+        : this(
+            environmentVariables,
+            credentialStore,
+            secretInputReader,
+            console,
+            new OpenAiCompatibleModelOptions())
+    {
+    }
+
+    public ProviderCredentialResolver(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console,
+        OpenAiCompatibleModelOptions options)
+    {
+        _environmentVariables = environmentVariables ??
+            throw new ArgumentNullException(nameof(environmentVariables));
+        _credentialStore = credentialStore ??
+            throw new ArgumentNullException(nameof(credentialStore));
+        _secretInputReader = secretInputReader ??
+            throw new ArgumentNullException(nameof(secretInputReader));
+        _console = console ?? throw new ArgumentNullException(nameof(console));
+        _options = options ?? throw new ArgumentNullException(nameof(options));
+        _options.Validate();
+        _scope = _options.CreateCredentialScope();
+    }
 
     public async Task ResolveForRunAsync(
         IProviderCredentialSession credentialSession,
@@ -18,7 +56,7 @@ public sealed class ProviderCredentialResolver(
         ArgumentNullException.ThrowIfNull(credentialSession);
 
         var environmentCredential = Normalize(
-            environmentVariables.Get(EnvironmentVariableName));
+            _environmentVariables.Get(_options.ApiKeyEnvironmentVariable));
         if (environmentCredential is not null)
         {
             credentialSession.Set(
@@ -28,33 +66,33 @@ public sealed class ProviderCredentialResolver(
         }
 
         var storedCredential = Normalize(
-            await credentialStore.GetAsync(cancellationToken));
+            await _credentialStore.GetAsync(_scope, cancellationToken));
         if (storedCredential is not null)
         {
             credentialSession.Set(storedCredential, ProviderCredentialSource.Stored);
             return;
         }
 
-        if (console.IsInputRedirected)
+        if (_console.IsInputRedirected)
         {
             throw new CredentialResolutionException(
-                "Xiaomi MiMo API key is not configured. Set MIMO_API_KEY or run 'agentpulse auth set'.");
+                $"API credential is not configured for the current model endpoint. Set {_options.ApiKeyEnvironmentVariable} or run 'agentpulse auth set'.");
         }
 
-        await console.Error.WriteLineAsync(
-            "Xiaomi MiMo API key was not found.".AsMemory(),
+        await _console.Error.WriteLineAsync(
+            "API credential was not found for the current model endpoint.".AsMemory(),
             cancellationToken);
-        await console.Error.WriteAsync(
-            "Enter MIMO_API_KEY: ".AsMemory(),
+        await _console.Error.WriteAsync(
+            $"Enter {_options.ApiKeyEnvironmentVariable}: ".AsMemory(),
             cancellationToken);
-        await console.Error.FlushAsync(cancellationToken);
+        await _console.Error.FlushAsync(cancellationToken);
 
         var promptedCredential = Normalize(
-            await secretInputReader.ReadAsync(cancellationToken));
+            await _secretInputReader.ReadAsync(cancellationToken));
         if (promptedCredential is null)
         {
             throw new CredentialResolutionException(
-                "Xiaomi MiMo API key cannot be empty.");
+                "The API credential cannot be empty.");
         }
 
         credentialSession.Set(promptedCredential, ProviderCredentialSource.Prompt);
@@ -62,11 +100,6 @@ public sealed class ProviderCredentialResolver(
 
     private static string? Normalize(string? value)
     {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return null;
-        }
-
-        return value.Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
     }
 }

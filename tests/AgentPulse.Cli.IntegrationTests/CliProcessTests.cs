@@ -123,7 +123,7 @@ public sealed class CliProcessTests
         return new Dictionary<string, string?>
         {
             ["MIMO_API_KEY"] = "process-test-secret",
-            ["AgentPulse__Xiaomi__BaseUrl"] = baseUrl,
+            ["AgentPulse__Model__BaseUrl"] = baseUrl,
             ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
             ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "security"),
         };

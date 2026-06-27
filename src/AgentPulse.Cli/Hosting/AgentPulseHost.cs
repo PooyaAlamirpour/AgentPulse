@@ -10,6 +10,7 @@ using AgentPulse.Cli.Credentials;
 using AgentPulse.Infrastructure;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Processes;
@@ -28,20 +29,30 @@ public static class AgentPulseHost
         IConsole? console = null,
         Action<IConfigurationBuilder>? configureConfiguration = null)
     {
+        var environmentName = Environment.GetEnvironmentVariable("DOTNET_ENVIRONMENT");
+        if (string.IsNullOrWhiteSpace(environmentName))
+        {
+            environmentName = Environments.Production;
+        }
+
         var settings = new HostApplicationBuilderSettings
         {
             ApplicationName = typeof(AgentPulseHost).Assembly.GetName().Name,
             ContentRootPath = AppContext.BaseDirectory,
+            EnvironmentName = environmentName,
             Args = Array.Empty<string>(),
+            DisableDefaults = true,
         };
 
         var builder = Host.CreateApplicationBuilder(settings);
-
-        builder.Configuration.AddJsonFile(
-            Path.Combine(AppContext.BaseDirectory, "appsettings.json"),
-            optional: true,
-            reloadOnChange: false);
-        builder.Configuration.AddEnvironmentVariables();
+        builder.Configuration
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: true, reloadOnChange: false)
+            .AddJsonFile(
+                $"appsettings.{environmentName}.json",
+                optional: true,
+                reloadOnChange: false)
+            .AddEnvironmentVariables();
         configureConfiguration?.Invoke(builder.Configuration);
 
         builder.Logging.ClearProviders();
@@ -63,6 +74,14 @@ public static class AgentPulseHost
                 $"{CliOptions.SectionName}:ApplicationName must not be empty.")
             .ValidateOnStart();
 
+        builder.Services
+            .AddOptions<OpenAiCompatibleModelOptions>()
+            .Bind(builder.Configuration.GetSection(OpenAiCompatibleModelOptions.SectionName))
+            .Validate(
+                static options => IsValid(options),
+                $"{OpenAiCompatibleModelOptions.SectionName} contains invalid model endpoint settings.")
+            .ValidateOnStart();
+
         var sessionRunOptions = new SessionRunOptions();
         builder.Configuration.GetSection(SessionRunOptions.SectionName).Bind(sessionRunOptions);
 
@@ -71,9 +90,20 @@ public static class AgentPulseHost
 
         RunLeaseOptionsValidator.Validate(sessionRunOptions, streamingRunOptions);
 
-        var xiaomiModelOptions = new XiaomiModelOptions();
-        builder.Configuration.GetSection(XiaomiModelOptions.SectionName).Bind(xiaomiModelOptions);
-        xiaomiModelOptions.Validate();
+        var modelOptions = new OpenAiCompatibleModelOptions();
+        builder.Configuration.GetSection(OpenAiCompatibleModelOptions.SectionName).Bind(modelOptions);
+        modelOptions.Validate();
+        var credentialScope = modelOptions.CreateCredentialScope();
+
+        var xiaomiCompatibilityOptions = new XiaomiModelOptions
+        {
+            BaseUrl = modelOptions.BaseUrl,
+            Model = modelOptions.Model,
+            MaxCompletionTokens = modelOptions.MaxCompletionTokens,
+            ThinkingMode = modelOptions.ThinkingMode,
+            FirstByteTimeout = modelOptions.FirstByteTimeout,
+            StreamIdleTimeout = modelOptions.StreamIdleTimeout,
+        };
 
         var persistenceOptions = new PersistenceOptions();
         builder.Configuration.GetSection(PersistenceOptions.SectionName).Bind(persistenceOptions);
@@ -83,7 +113,9 @@ public static class AgentPulseHost
 
         builder.Services.AddSingleton(sessionRunOptions);
         builder.Services.AddSingleton(streamingRunOptions);
-        builder.Services.AddSingleton(xiaomiModelOptions);
+        builder.Services.AddSingleton(modelOptions);
+        builder.Services.AddSingleton(credentialScope);
+        builder.Services.AddSingleton(xiaomiCompatibilityOptions);
         builder.Services.AddSingleton(persistenceOptions);
         builder.Services.AddSingleton<IApplicationDataPathProvider>(applicationDataPathProvider);
         builder.Services.AddSingleton(serviceProvider =>
@@ -108,7 +140,7 @@ public static class AgentPulseHost
 
         builder.Services.AddAgentPulsePersistence(databasePath);
         builder.Services.AddAgentPulseCredentialStore();
-        builder.Services.AddXiaomiModelProvider();
+        builder.Services.AddOpenAiCompatibleModelProvider();
 
         builder.Services.AddScoped<IRegisterProject, RegisterProject>();
         builder.Services.AddScoped<ICreateSession, CreateSession>();
@@ -132,5 +164,18 @@ public static class AgentPulseHost
         builder.Services.AddSingleton<CliApplication>();
 
         return builder;
+    }
+
+    private static bool IsValid(OpenAiCompatibleModelOptions options)
+    {
+        try
+        {
+            options.Validate();
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
     }
 }

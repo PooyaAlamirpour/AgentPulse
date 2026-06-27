@@ -2,12 +2,14 @@ using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.Persistence;
 using AgentPulse.Infrastructure.Credentials;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AgentPulse.Infrastructure;
 
@@ -63,8 +65,12 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(services);
 
+        services.TryAddSingleton(ProviderCredentialScope.XiaomiDefault);
         services.AddSingleton<IProviderCredentialStore, DataProtectionProviderCredentialStore>();
-        services.AddScoped<IProviderCredentialSession, ProviderCredentialSession>();
+        services.AddScoped<IProviderCredentialSession>(serviceProvider =>
+            new ProviderCredentialSession(
+                serviceProvider.GetRequiredService<IProviderCredentialStore>(),
+                serviceProvider.GetRequiredService<ProviderCredentialScope>()));
         return services;
     }
 
@@ -77,18 +83,44 @@ public static class DependencyInjection
         return services.AddAgentPulseCredentialStore();
     }
 
-    public static IServiceCollection AddXiaomiModelProvider(
+    public static IServiceCollection AddOpenAiCompatibleModelProvider(
         this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddSingleton<XiaomiSseParser>();
-        services.AddHttpClient(XiaomiChatModelClient.HttpClientName, client =>
-        {
-            client.Timeout = Timeout.InfiniteTimeSpan;
-        });
-        services.AddScoped<IChatModelClient, XiaomiChatModelClient>();
+        services.AddSingleton<OpenAiCompatibleSseParser>();
+        services.AddHttpClient(OpenAiCompatibleChatModelClient.HttpClientName, client =>
+            {
+                client.Timeout = Timeout.InfiniteTimeSpan;
+            })
+            .ConfigurePrimaryHttpMessageHandler(static () => new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+            })
+            .SetHandlerLifetime(TimeSpan.FromMinutes(5));
+        services.AddScoped<IChatModelClient, OpenAiCompatibleChatModelClient>();
         return services;
+    }
+
+    public static IServiceCollection AddOpenAiCompatibleModelProvider(
+        this IServiceCollection services,
+        OpenAiCompatibleModelOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
+        services.AddSingleton(options);
+        services.AddSingleton(options.CreateCredentialScope());
+        return services.AddOpenAiCompatibleModelProvider();
+    }
+
+    public static IServiceCollection AddXiaomiModelProvider(
+        this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton(new XiaomiModelOptions());
+        services.TryAddSingleton(new OpenAiCompatibleModelOptions());
+        services.TryAddSingleton(ProviderCredentialScope.XiaomiDefault);
+        return services.AddOpenAiCompatibleModelProvider();
     }
 
     public static IServiceCollection AddXiaomiModelProvider(
@@ -98,6 +130,7 @@ public static class DependencyInjection
         ArgumentNullException.ThrowIfNull(options);
         options.Validate();
         services.AddSingleton(options);
-        return services.AddXiaomiModelProvider();
+        return services.AddOpenAiCompatibleModelProvider(
+            options.ToOpenAiCompatibleOptions());
     }
 }

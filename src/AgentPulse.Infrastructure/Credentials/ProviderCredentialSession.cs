@@ -1,11 +1,26 @@
 namespace AgentPulse.Infrastructure.Credentials;
 
-public sealed class ProviderCredentialSession(IProviderCredentialStore credentialStore)
-    : IProviderCredentialSession
+public sealed class ProviderCredentialSession : IProviderCredentialSession
 {
+    private readonly IProviderCredentialStore _credentialStore;
+    private readonly ProviderCredentialScope _scope;
     private string? _credential;
     private ProviderCredentialSource _source;
     private bool _accepted;
+
+    public ProviderCredentialSession(IProviderCredentialStore credentialStore)
+        : this(credentialStore, ProviderCredentialScope.XiaomiDefault)
+    {
+    }
+
+    public ProviderCredentialSession(
+        IProviderCredentialStore credentialStore,
+        ProviderCredentialScope scope)
+    {
+        _credentialStore = credentialStore ??
+            throw new ArgumentNullException(nameof(credentialStore));
+        _scope = scope ?? throw new ArgumentNullException(nameof(scope));
+    }
 
     public void Set(string credential, ProviderCredentialSource source)
     {
@@ -46,9 +61,9 @@ public sealed class ProviderCredentialSession(IProviderCredentialStore credentia
             return;
         }
 
-        if (_source == ProviderCredentialSource.Prompt)
+        if (_source is ProviderCredentialSource.Prompt or ProviderCredentialSource.Stored)
         {
-            await credentialStore.SaveAsync(_credential, cancellationToken);
+            await _credentialStore.SaveAsync(_scope, _credential, cancellationToken);
         }
 
         _accepted = true;
@@ -65,7 +80,7 @@ public sealed class ProviderCredentialSession(IProviderCredentialStore credentia
 
         if (_source == ProviderCredentialSource.Stored)
         {
-            await credentialStore.DeleteAsync(cancellationToken);
+            await _credentialStore.DeleteAsync(_scope, cancellationToken);
         }
     }
 }

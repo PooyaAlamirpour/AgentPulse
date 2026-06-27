@@ -1,6 +1,7 @@
 using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Infrastructure.Credentials;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 
 namespace AgentPulse.Cli.IntegrationTests;
 
@@ -23,7 +24,7 @@ public sealed class CredentialCommandTests
 
         Assert.Equal("prompt-key", session.GetRequiredCredential());
         Assert.Equal(1, secretReader.ReadCount);
-        Assert.Contains("Xiaomi MiMo API key was not found.", console.StandardError.ToString(), StringComparison.Ordinal);
+        Assert.Contains("API credential was not found for the current model endpoint.", console.StandardError.ToString(), StringComparison.Ordinal);
         Assert.Contains("Enter MIMO_API_KEY:", console.StandardError.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("prompt-key", console.StandardError.ToString(), StringComparison.Ordinal);
         Assert.Equal(0, store.SaveCount);
@@ -127,7 +128,7 @@ public sealed class CredentialCommandTests
         console.StandardOutput.GetStringBuilder().Clear();
         Assert.Equal(ExitCodes.Success, await handler.HandleAsync("status"));
         Assert.Equal(
-            "API credential is configured.",
+            "API credential is configured for the current model endpoint.",
             console.StandardOutput.ToString().Trim());
 
         console.StandardOutput.GetStringBuilder().Clear();
@@ -154,11 +155,94 @@ public sealed class CredentialCommandTests
 
         Assert.Equal(ExitCodes.Success, exitCode);
         Assert.Equal(
-            "MIMO_API_KEY environment variable is configured.",
+            "Configured API key environment variable is available.",
             console.StandardOutput.ToString().Trim());
         Assert.DoesNotContain("secret", console.StandardOutput.ToString(), StringComparison.OrdinalIgnoreCase);
     }
 
+
+
+    [Fact]
+    public async Task Custom_environment_variable_overrides_scoped_stored_credential_without_copying_it()
+    {
+        var console = new TestConsole(isInputRedirected: false);
+        var store = new RecordingCredentialStore();
+        var options = GenericOptions("https://provider.example/v1", "PROVIDER_API_KEY");
+        var scope = options.CreateCredentialScope();
+        await store.SaveAsync(scope, "stored-key");
+        var environment = new DictionaryEnvironmentReader
+        {
+            ["PROVIDER_API_KEY"] = " environment-key ",
+        };
+        var resolver = new ProviderCredentialResolver(
+            environment,
+            store,
+            new RecordingSecretInputReader("prompt-key"),
+            console,
+            options);
+        var session = new ProviderCredentialSession(store, scope);
+
+        await resolver.ResolveForRunAsync(session);
+        await session.MarkAcceptedAsync();
+
+        Assert.Equal("environment-key", session.GetRequiredCredential());
+        Assert.Equal("stored-key", await store.GetAsync(scope));
+        Assert.Equal(1, store.SaveCount);
+    }
+
+    [Fact]
+    public async Task Resolver_never_uses_a_credential_from_another_endpoint_scope()
+    {
+        var console = new TestConsole(input: string.Empty, isInputRedirected: true);
+        var store = new RecordingCredentialStore();
+        var firstOptions = GenericOptions("https://first.example/v1", "FIRST_API_KEY");
+        var secondOptions = GenericOptions("https://second.example/v1", "SECOND_API_KEY");
+        await store.SaveAsync(firstOptions.CreateCredentialScope(), "first-secret");
+        var resolver = new ProviderCredentialResolver(
+            new DictionaryEnvironmentReader(),
+            store,
+            new RecordingSecretInputReader("unused"),
+            console,
+            secondOptions);
+
+        var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
+            resolver.ResolveForRunAsync(
+                new ProviderCredentialSession(store, secondOptions.CreateCredentialScope())));
+
+        Assert.Contains("SECOND_API_KEY", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("first-secret", exception.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Auth_commands_read_write_and_clear_only_the_current_scope()
+    {
+        var store = new RecordingCredentialStore();
+        var firstOptions = GenericOptions("https://first.example/v1", "FIRST_API_KEY");
+        var secondOptions = GenericOptions("https://second.example/v1", "SECOND_API_KEY");
+        await store.SaveAsync(secondOptions.CreateCredentialScope(), "second-secret");
+        var console = new TestConsole(isInputRedirected: false);
+        var handler = new AuthCommandHandler(
+            new DictionaryEnvironmentReader(),
+            store,
+            new RecordingSecretInputReader("first-secret"),
+            console,
+            firstOptions);
+
+        Assert.Equal(ExitCodes.Success, await handler.HandleAsync("status"));
+        Assert.Equal(
+            "API credential is not configured for the current model endpoint.",
+            console.StandardOutput.ToString().Trim());
+
+        console.StandardOutput.GetStringBuilder().Clear();
+        Assert.Equal(ExitCodes.Success, await handler.HandleAsync("set"));
+        Assert.Equal("first-secret", await store.GetAsync(firstOptions.CreateCredentialScope()));
+        Assert.Equal("second-secret", await store.GetAsync(secondOptions.CreateCredentialScope()));
+
+        console.StandardOutput.GetStringBuilder().Clear();
+        Assert.Equal(ExitCodes.Success, await handler.HandleAsync("clear"));
+        Assert.Null(await store.GetAsync(firstOptions.CreateCredentialScope()));
+        Assert.Equal("second-secret", await store.GetAsync(secondOptions.CreateCredentialScope()));
+    }
 
     [Fact]
     public async Task Auth_set_returns_cancellation_exit_code_when_hidden_input_is_cancelled()
@@ -259,36 +343,104 @@ public sealed class CredentialCommandTests
         }
     }
 
+    private static OpenAiCompatibleModelOptions GenericOptions(
+        string baseUrl,
+        string environmentVariable)
+    {
+        return new OpenAiCompatibleModelOptions
+        {
+            BaseUrl = baseUrl,
+            Model = "generic-model",
+            AuthenticationMode = OpenAiCompatibleAuthenticationMode.Bearer,
+            ApiKeyEnvironmentVariable = environmentVariable,
+            IncludeThinkingConfiguration = false,
+        };
+    }
+
     private sealed class RecordingCredentialStore : IProviderCredentialStore
     {
-        public string? StoredCredential { get; set; }
+        private readonly Dictionary<string, string> _scoped = new(StringComparer.Ordinal);
+
+        public string? StoredCredential
+        {
+            get => _scoped.GetValueOrDefault(ProviderCredentialScope.XiaomiDefault.CanonicalValue);
+            set
+            {
+                if (value is null)
+                {
+                    _scoped.Remove(ProviderCredentialScope.XiaomiDefault.CanonicalValue);
+                }
+                else
+                {
+                    _scoped[ProviderCredentialScope.XiaomiDefault.CanonicalValue] = value;
+                }
+            }
+        }
+
         public int SaveCount { get; private set; }
+
         public int DeleteCount { get; private set; }
 
         public Task<string?> GetAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(StoredCredential);
+            return GetAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
         }
 
         public Task SaveAsync(
             string credential,
             CancellationToken cancellationToken = default)
         {
-            StoredCredential = credential;
-            SaveCount++;
-            return Task.CompletedTask;
+            return SaveAsync(
+                ProviderCredentialScope.XiaomiDefault,
+                credential,
+                cancellationToken);
         }
 
         public Task DeleteAsync(CancellationToken cancellationToken = default)
         {
-            StoredCredential = null;
-            DeleteCount++;
-            return Task.CompletedTask;
+            return DeleteAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
         }
 
         public Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
         {
-            return Task.FromResult(StoredCredential is not null);
+            return ExistsAsync(ProviderCredentialScope.XiaomiDefault, cancellationToken);
+        }
+
+        public Task<string?> GetAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_scoped.GetValueOrDefault(scope.CanonicalValue));
+        }
+
+        public Task SaveAsync(
+            ProviderCredentialScope scope,
+            string credential,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _scoped[scope.CanonicalValue] = credential;
+            SaveCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task DeleteAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            _scoped.Remove(scope.CanonicalValue);
+            DeleteCount++;
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> ExistsAsync(
+            ProviderCredentialScope scope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_scoped.ContainsKey(scope.CanonicalValue));
         }
     }
 

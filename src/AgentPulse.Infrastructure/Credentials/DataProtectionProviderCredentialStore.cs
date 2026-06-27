@@ -6,8 +6,9 @@ namespace AgentPulse.Infrastructure.Credentials;
 
 public sealed class DataProtectionProviderCredentialStore : IProviderCredentialStore
 {
-    private const string Purpose = "AgentPulse.ProviderCredential.v1";
-    private const string CredentialFileName = "xiaomi-mimo.credential";
+    private const string LegacyPurpose = "AgentPulse.ProviderCredential.v1";
+    private const string ScopedPurpose = "AgentPulse.ProviderCredential.v2";
+    private const string LegacyCredentialFileName = "xiaomi-mimo.credential";
     private const string KeyRingDirectoryName = "keyring";
 
     private static readonly UnixFileMode DirectoryMode =
@@ -20,22 +21,23 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
         UnixFileMode.UserWrite;
 
     private readonly string _rootPath;
-    private readonly string _credentialPath;
+    private readonly string _legacyCredentialPath;
     private readonly string _keyRingPath;
-    private readonly IDataProtector _protector;
+    private readonly IDataProtectionProvider _provider;
+    private readonly IDataProtector _legacyProtector;
 
     public DataProtectionProviderCredentialStore(ProviderCredentialStoreOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 
         _rootPath = options.RootPath;
-        _credentialPath = Path.Combine(_rootPath, CredentialFileName);
+        _legacyCredentialPath = Path.Combine(_rootPath, LegacyCredentialFileName);
         _keyRingPath = Path.Combine(_rootPath, KeyRingDirectoryName);
 
         EnsureSecureDirectory(_rootPath);
         EnsureSecureDirectory(_keyRingPath);
 
-        var provider = DataProtectionProvider.Create(
+        _provider = DataProtectionProvider.Create(
             new DirectoryInfo(_keyRingPath),
             builder =>
             {
@@ -46,28 +48,141 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
                     builder.ProtectKeysWithDpapi();
                 }
             });
-        _protector = provider.CreateProtector(Purpose);
+        _legacyProtector = _provider.CreateProtector(LegacyPurpose);
     }
 
-    public async Task<string?> GetAsync(CancellationToken cancellationToken = default)
+    public Task<string?> GetAsync(CancellationToken cancellationToken = default)
     {
-        if (!File.Exists(_credentialPath))
+        return ReadCredentialAsync(
+            _legacyCredentialPath,
+            _legacyProtector,
+            "The stored Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public Task SaveAsync(
+        string credential,
+        CancellationToken cancellationToken = default)
+    {
+        return WriteCredentialAsync(
+            _legacyCredentialPath,
+            _legacyProtector,
+            credential,
+            "The Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public Task DeleteAsync(CancellationToken cancellationToken = default)
+    {
+        return DeleteFileAsync(
+            _legacyCredentialPath,
+            "The stored Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(File.Exists(_legacyCredentialPath));
+    }
+
+    public async Task<string?> GetAsync(
+        ProviderCredentialScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        var scopedPath = GetScopedCredentialPath(scope);
+        var scopedCredential = await ReadCredentialAsync(
+            scopedPath,
+            GetScopedProtector(scope),
+            "The stored model endpoint credential",
+            cancellationToken);
+
+        if (scopedCredential is not null || !scope.IsOfficialXiaomi)
+        {
+            return scopedCredential;
+        }
+
+        return await ReadCredentialAsync(
+            _legacyCredentialPath,
+            _legacyProtector,
+            "The legacy Xiaomi MiMo credential",
+            cancellationToken);
+    }
+
+    public async Task SaveAsync(
+        ProviderCredentialScope scope,
+        string credential,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        await WriteCredentialAsync(
+            GetScopedCredentialPath(scope),
+            GetScopedProtector(scope),
+            credential,
+            "The model endpoint credential",
+            cancellationToken);
+
+        if (scope.IsOfficialXiaomi)
+        {
+            await DeleteFileAsync(
+                _legacyCredentialPath,
+                "The legacy Xiaomi MiMo credential",
+                cancellationToken);
+        }
+    }
+
+    public async Task DeleteAsync(
+        ProviderCredentialScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        await DeleteFileAsync(
+            GetScopedCredentialPath(scope),
+            "The stored model endpoint credential",
+            cancellationToken);
+
+        if (scope.IsOfficialXiaomi)
+        {
+            await DeleteFileAsync(
+                _legacyCredentialPath,
+                "The legacy Xiaomi MiMo credential",
+                cancellationToken);
+        }
+    }
+
+    public Task<bool> ExistsAsync(
+        ProviderCredentialScope scope,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        cancellationToken.ThrowIfCancellationRequested();
+        var exists = File.Exists(GetScopedCredentialPath(scope)) ||
+                     (scope.IsOfficialXiaomi && File.Exists(_legacyCredentialPath));
+        return Task.FromResult(exists);
+    }
+
+    private async Task<string?> ReadCredentialAsync(
+        string path,
+        IDataProtector protector,
+        string safeDescription,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
         {
             return null;
         }
 
         try
         {
-            var protectedBytes = await File.ReadAllBytesAsync(
-                _credentialPath,
-                cancellationToken);
-            var plaintextBytes = _protector.Unprotect(protectedBytes);
+            var protectedBytes = await File.ReadAllBytesAsync(path, cancellationToken);
+            var plaintextBytes = protector.Unprotect(protectedBytes);
             var credential = Encoding.UTF8.GetString(plaintextBytes).Trim();
 
             if (string.IsNullOrWhiteSpace(credential))
             {
                 throw new ProviderCredentialStoreException(
-                    "The stored Xiaomi MiMo credential is empty or corrupt.");
+                    $"{safeDescription} is empty or corrupt.");
             }
 
             return credential;
@@ -87,14 +202,17 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
             DecoderFallbackException)
         {
             throw new ProviderCredentialStoreException(
-                "The stored Xiaomi MiMo credential could not be read or decrypted.",
+                $"{safeDescription} could not be read or decrypted.",
                 exception);
         }
     }
 
-    public async Task SaveAsync(
+    private async Task WriteCredentialAsync(
+        string path,
+        IDataProtector protector,
         string credential,
-        CancellationToken cancellationToken = default)
+        string safeDescription,
+        CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(credential);
         var normalizedCredential = credential.Trim();
@@ -104,16 +222,16 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
 
         var temporaryPath = Path.Combine(
             _rootPath,
-            $".{CredentialFileName}.{Guid.NewGuid():N}.tmp");
+            $".{Path.GetFileName(path)}.{Guid.NewGuid():N}.tmp");
 
         try
         {
             var plaintextBytes = Encoding.UTF8.GetBytes(normalizedCredential);
-            var protectedBytes = _protector.Protect(plaintextBytes);
+            var protectedBytes = protector.Protect(plaintextBytes);
 
             var streamOptions = new FileStreamOptions
             {
-                Mode = System.IO.FileMode.CreateNew,
+                Mode = FileMode.CreateNew,
                 Access = FileAccess.Write,
                 Share = FileShare.None,
                 BufferSize = 4096,
@@ -132,8 +250,8 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
                 await stream.FlushAsync(cancellationToken);
             }
 
-            File.Move(temporaryPath, _credentialPath, overwrite: true);
-            ApplySecureFileMode(_credentialPath);
+            File.Move(temporaryPath, path, overwrite: true);
+            ApplySecureFileMode(path);
             HardenKeyRingFiles();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -148,20 +266,23 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
         {
             TryDelete(temporaryPath);
             throw new ProviderCredentialStoreException(
-                "The Xiaomi MiMo credential could not be stored securely.",
+                $"{safeDescription} could not be stored securely.",
                 exception);
         }
     }
 
-    public Task DeleteAsync(CancellationToken cancellationToken = default)
+    private static Task DeleteFileAsync(
+        string path,
+        string safeDescription,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
         try
         {
-            if (File.Exists(_credentialPath))
+            if (File.Exists(path))
             {
-                File.Delete(_credentialPath);
+                File.Delete(path);
             }
 
             return Task.CompletedTask;
@@ -170,15 +291,19 @@ public sealed class DataProtectionProviderCredentialStore : IProviderCredentialS
             exception is IOException or UnauthorizedAccessException)
         {
             throw new ProviderCredentialStoreException(
-                "The stored Xiaomi MiMo credential could not be removed.",
+                $"{safeDescription} could not be removed.",
                 exception);
         }
     }
 
-    public Task<bool> ExistsAsync(CancellationToken cancellationToken = default)
+    private string GetScopedCredentialPath(ProviderCredentialScope scope)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        return Task.FromResult(File.Exists(_credentialPath));
+        return Path.Combine(_rootPath, $"provider-{scope.FileId}.credential");
+    }
+
+    private IDataProtector GetScopedProtector(ProviderCredentialScope scope)
+    {
+        return _provider.CreateProtector(ScopedPurpose, scope.CanonicalValue);
     }
 
     private static void EnsureSecureDirectory(string path)

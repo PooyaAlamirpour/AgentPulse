@@ -1,15 +1,15 @@
 # AgentPulse
 
-**AgentPulse** is an open-source, cross-platform .NET 8 command-line assistant with project-aware prompts, persistent conversations, real-time model streaming, secure credential storage, Git-aware context, and recovery-safe session state.
+**AgentPulse** is an open-source, cross-platform .NET 8 command-line assistant with project-aware prompts, persistent conversations, real-time model streaming, secure endpoint-scoped credentials, Git-aware context, and recovery-safe session state.
 
-The implementation is developed through a 10-phase roadmap. **Phase 6 is complete**: `agentpulse run` now connects to Xiaomi MiMo through its OpenAI-compatible Chat Completions endpoint, renders text deltas immediately, persists partial output safely, renews the run lease, and finalizes cancelled or failed runs without discarding received text.
+The implementation is developed through a 10-phase roadmap. **Phase 7 is complete**: Xiaomi MiMo remains the default provider profile, while the runtime transport is now a single hardened OpenAI-compatible client that supports a configurable endpoint, model, authentication mode, SSE streaming, bounded error parsing, redirect protection, and failure-stage tracking.
 
-> **Development status:** Active development — **7 of 10 phases completed**  
-> **Current milestone:** Phase 6 — Real Xiaomi MiMo Streaming and Secure Credentials  
-> **Provider:** Xiaomi MiMo, default model `mimo-v2.5-pro`
+> **Development status:** Active development — **8 of 10 phases completed**
+> **Current milestone:** Phase 7 — OpenAI-Compatible Provider Generalization and Hardening
+> **Default provider profile:** Xiaomi MiMo, model `mimo-v2.5-pro`
 
 > [!WARNING]
-> Calls to the Xiaomi MiMo API may incur usage charges. Review the provider's current pricing and account limits before running prompts or opt-in live tests.
+> Model API calls may incur usage charges. Review the configured provider's current pricing, account limits, and data-handling terms before running prompts or opt-in live tests.
 
 ---
 
@@ -25,71 +25,201 @@ The implementation is developed through a 10-phase roadmap. **Phase 6 is complet
 - A single final newline after successful completion
 - `Ctrl+C` cancellation with exit code `130`
 - Non-zero exit codes for provider, persistence, configuration, and input failures
-- Credential commands:
+- Endpoint-scoped credential commands:
   - `agentpulse auth set`
   - `agentpulse auth status`
   - `agentpulse auth clear`
 
-### Xiaomi MiMo Provider
+### OpenAI-Compatible Model Transport
 
-- OpenAI-compatible `POST /chat/completions`
-- Default base URL: `https://api.xiaomimimo.com/v1`
-- Default model: `mimo-v2.5-pro`
-- Per-request `api-key` authentication header
-- `stream: true`
-- `max_completion_tokens: 4096`
-- `thinking.type: disabled`
-- `IHttpClientFactory` and `HttpCompletionOption.ResponseHeadersRead`
-- Incremental Server-Sent Events parsing without buffering the complete response
+- A single runtime `OpenAiCompatibleChatModelClient` implementation of `IChatModelClient`
+- Xiaomi MiMo supplied through the default configuration profile; no provider registry or provider-selection flag
+- Configurable absolute base URL, relative Chat Completions path, model, authentication, completion-token limit, thinking extension, and streaming timeouts
+- OpenAI-compatible `POST` request with `stream: true` and `stream_options.include_usage: true`
+- `IHttpClientFactory`, `HttpCompletionOption.ResponseHeadersRead`, and an infinite `HttpClient.Timeout`
+- Automatic HTTP redirects disabled to prevent forwarding credentials to another target
+- HTTPS required for remote hosts; HTTP accepted only for loopback test or development endpoints
+- Incremental SSE parsing for fragmented frames, fragmented UTF-8, LF/CRLF, comments, keep-alive events, multi-line `data:`, `[DONE]`, deltas, finish reason, and usage
 - Distinct first-byte and stream-idle timeouts
-- Cancellation propagated through HTTP and stream reads
-- No automatic retry for streaming requests
+- Cancellation propagated through `SendAsync`, response-stream reads, and SSE enumeration
+- Provider-independent error taxonomy and `BeforeFirstToken` / `AfterFirstToken` failure stages
+- No automatic retry for chargeable streaming requests
 - No tools, function calls, plugins, web search, attachments, or reasoning-content persistence
 
-### Secure Credentials
+### Default Xiaomi MiMo Profile
 
-Credential resolution order for `run`:
-
-1. `MIMO_API_KEY` environment variable
-2. Securely stored user credential
-3. Hidden interactive prompt
-
-The first interactive `run` without a configured key displays:
-
-```text
-Xiaomi MiMo API key was not found.
-Enter MIMO_API_KEY:
+```json
+{
+  "AgentPulse": {
+    "Model": {
+      "BaseUrl": "https://api.xiaomimimo.com/v1",
+      "ChatCompletionsPath": "chat/completions",
+      "Model": "mimo-v2.5-pro",
+      "AuthenticationMode": "ApiKeyHeader",
+      "ApiKeyHeaderName": "api-key",
+      "ApiKeyEnvironmentVariable": "MIMO_API_KEY",
+      "MaxCompletionTokens": 4096,
+      "ThinkingMode": "disabled",
+      "IncludeThinkingConfiguration": true,
+      "FirstByteTimeout": "00:00:30",
+      "StreamIdleTimeout": "00:01:00"
+    }
+  }
+}
 ```
 
-The API key is entered without echo. A prompted key is stored only after Xiaomi returns a successful HTTP `2xx` response. Environment credentials are never copied into the credential store. If a stored credential receives `401` or `403`, it is removed so the next run can request a replacement.
+The Xiaomi profile sends:
 
-The credential is protected in the current user's local application-data scope under the logical path:
+```http
+api-key: <API_KEY>
+```
+
+and preserves the existing request extension:
+
+```json
+{
+  "thinking": {
+    "type": "disabled"
+  }
+}
+```
+
+### Generic OpenAI-Compatible Endpoint
+
+A custom endpoint is selected only through configuration. No new command is required:
+
+```json
+{
+  "AgentPulse": {
+    "Model": {
+      "BaseUrl": "https://provider.example/v1",
+      "ChatCompletionsPath": "chat/completions",
+      "Model": "provider-model",
+      "AuthenticationMode": "Bearer",
+      "ApiKeyHeaderName": "api-key",
+      "ApiKeyEnvironmentVariable": "PROVIDER_API_KEY",
+      "MaxCompletionTokens": 4096,
+      "ThinkingMode": "disabled",
+      "IncludeThinkingConfiguration": false,
+      "FirstByteTimeout": "00:00:30",
+      "StreamIdleTimeout": "00:01:00"
+    }
+  }
+}
+```
+
+PowerShell environment-variable equivalent:
+
+```powershell
+$env:AgentPulse__Model__BaseUrl = "https://provider.example/v1"
+$env:AgentPulse__Model__ChatCompletionsPath = "chat/completions"
+$env:AgentPulse__Model__Model = "provider-model"
+$env:AgentPulse__Model__AuthenticationMode = "Bearer"
+$env:AgentPulse__Model__ApiKeyEnvironmentVariable = "PROVIDER_API_KEY"
+$env:AgentPulse__Model__IncludeThinkingConfiguration = "false"
+$env:PROVIDER_API_KEY = "..."
+```
+
+Supported authentication modes are:
+
+- `Bearer` → `Authorization: Bearer <API_KEY>`
+- `ApiKeyHeader` → `<ApiKeyHeaderName>: <API_KEY>`
+
+Sensitive or transport-controlled header names such as `Host`, `Content-Length`, and `Transfer-Encoding` are rejected for `ApiKeyHeader` mode. `ApiKeyHeaderName` is ignored in `Bearer` mode.
+
+### Configuration Precedence
+
+Non-secret model configuration uses the standard order below, from lowest to highest priority:
+
+1. Default values in code
+2. `appsettings.json`
+3. `appsettings.{Environment}.json`
+4. Environment variables
+
+Environment variables therefore override JSON. Supported model keys include:
+
+```text
+AgentPulse__Model__BaseUrl
+AgentPulse__Model__ChatCompletionsPath
+AgentPulse__Model__Model
+AgentPulse__Model__AuthenticationMode
+AgentPulse__Model__ApiKeyHeaderName
+AgentPulse__Model__ApiKeyEnvironmentVariable
+AgentPulse__Model__MaxCompletionTokens
+AgentPulse__Model__ThinkingMode
+AgentPulse__Model__IncludeThinkingConfiguration
+AgentPulse__Model__FirstByteTimeout
+AgentPulse__Model__StreamIdleTimeout
+```
+
+The actual API key is deliberately not a bindable option. `OpenAiCompatibleModelOptions` has no `ApiKey` property, and an `ApiKey` value placed in JSON is ignored.
+
+### Secure, Endpoint-Scoped Credentials
+
+Credential resolution for `run` uses this order:
+
+1. The environment variable named by `AgentPulse:Model:ApiKeyEnvironmentVariable`
+2. The securely stored credential for the current endpoint scope
+3. A hidden interactive prompt
+
+An environment credential is never copied into the credential store. A prompted credential is stored only after the endpoint returns a successful HTTP response. A stored credential rejected with `401` or `403` is removed only from the current endpoint scope.
+
+A credential scope is derived from non-secret endpoint identity:
+
+```text
+normalized scheme + normalized host + effective port + authentication mode + API-key header name when applicable
+```
+
+The model and base-URL path are intentionally excluded because one key commonly covers multiple models and API paths on the same provider origin. Scheme, port, authentication mode, and API-key header differences create different scopes. Host casing and default ports are normalized.
+
+Changing `BaseUrl` to another host does **not** make the previous credential available to that host. Scoped file names use a SHA-256 digest of the non-secret scope; neither the key nor a key-derived hash appears in the file name or metadata. Credential contents remain protected by ASP.NET Core Data Protection.
+
+A legacy unscoped Phase 6 credential is considered only for the official Xiaomi endpoint. After that credential is accepted successfully by Xiaomi, it is rewritten into the scoped format and the legacy file is removed. It is never migrated or used for a custom host.
+
+The `auth` commands always operate on the current configuration scope:
+
+- `auth set` stores or replaces only the current scope
+- `auth status` reports only the current scope or configured environment-variable availability
+- `auth clear` removes only the current scope and does not change environment variables
+
+No command prints any key fragment, key length, key hash, or complete scope value.
+
+The protected credential root is under the current user's logical local application-data directory:
 
 ```text
 <LocalApplicationData>/AgentPulse/security/
 ```
 
-The exact operating-system path is derived at runtime. The protected credential is never stored in `appsettings`, SQLite, the repository, Git configuration, a command-line argument, or a plaintext credential file. Windows key-ring protection uses user-scoped DPAPI. Unix directories and files are restricted to the current user.
+The exact operating-system path is derived at runtime. Credentials are never stored in SQLite, JSON configuration, the repository, Git configuration, or command-line arguments.
+
+### Endpoint and Redirect Security
+
+- `BaseUrl` must be absolute.
+- `ChatCompletionsPath` must be relative and cannot contain another scheme, host, query, fragment, backslash, or traversal segment.
+- Base URL and relative path are combined without changing origin.
+- Remote HTTP endpoints are rejected; loopback HTTP remains available for local contract tests and development.
+- `301`, `302`, `303`, `307`, and `308` are converted to provider errors instead of being followed.
+- Redirect locations and provider error URLs are sanitized by removing user information, query strings, and fragments.
+- Error bodies are read only up to a bounded limit and are sanitized before entering exceptions.
+- API keys, authorization headers, request bodies, system prompts, and conversation history are not retained in provider exceptions.
 
 ### Persistence and Recovery
 
 - Default runtime database path: `<LocalApplicationData>/AgentPulse/data/agentpulse.db`
 - Stable user-scoped storage shared by Debug, Release, and published executions
-- `AgentPulse__Persistence__DatabasePath` override support; relative overrides are normalized against the current working directory
+- `AgentPulse__Persistence__DatabasePath` override support
 - Design-time migrations use a separate temporary database and never open the user's runtime database by default
 - Project, Session, Message, MessagePart, and RunLease domain models
 - Entity Framework Core with SQLite and migrations
-- User message committed before provider execution
-- Streaming assistant message and empty text part committed before the HTTP request
+- User and streaming assistant records committed before provider execution
 - Ordered previous history with the current prompt included exactly once
 - Immediate delta rendering and exact ordered text accumulation
 - Configurable partial flush interval and character threshold
 - Final flush on success, cancellation, or failure
-- Partial text preserved after cancellation or provider failure
+- Partial text preserved after a failure or cancellation following the first token
+- Failure stage tracked during the current HTTP/SSE run rather than inferred from persisted text
 - Session returned to `Idle` on every finalized path
-- Lease released only by its owner
 - Independent periodic lease renewal during long streams
-- Provider cancellation, HTTP errors, malformed SSE, incomplete streams, and lost leases mapped to safe failures
 
 ### Project Context
 
@@ -104,13 +234,12 @@ The exact operating-system path is derived at runtime. The protected credential 
 ### Architecture and Quality
 
 - Clean Architecture with one-way dependencies
-- Domain isolated from HTTP, Xiaomi, SSE, console, credentials, and EF Core
-- Application owns provider-independent streaming orchestration and flush policy
-- Infrastructure owns Xiaomi transport, SSE, secure credentials, EF Core, and SQLite
-- CLI owns hidden input, console rendering, commands, and exit codes
-- Nullable reference types enabled
-- Warnings treated as errors
-- Automated tests use local HTTP servers and temporary credential/database roots
+- Domain isolated from HTTP, provider details, SSE, console, credentials, and EF Core
+- Application owns provider-independent request, event, failure-stage, and streaming orchestration contracts
+- Infrastructure owns the single OpenAI-compatible transport, SSE parser, secure credentials, EF Core, and SQLite
+- CLI owns hidden input, configuration composition, console rendering, commands, and exit codes
+- Nullable reference types enabled and warnings treated as errors
+- Deterministic tests use local HTTP servers and temporary credential/database roots
 - Normal tests require neither internet access nor an API key
 
 ---
@@ -120,7 +249,7 @@ The exact operating-system path is derived at runtime. The protected credential 
 | Area | Technology |
 |---|---|
 | Runtime | .NET 8 |
-| Language | C# |
+| Language | C# 12 |
 | Architecture | Clean Architecture |
 | Hosting and DI | .NET Generic Host and Microsoft.Extensions.DependencyInjection |
 | HTTP | `HttpClient` and `IHttpClientFactory` |
@@ -147,7 +276,8 @@ flowchart LR
 - `AgentPulse.Application` depends only on Domain.
 - `AgentPulse.Infrastructure` implements Application ports.
 - `AgentPulse.Cli` is the Composition Root.
-- Application contracts do not expose Xiaomi-specific DTOs or API-key handling.
+- Application contracts do not expose provider DTOs or API-key handling.
+- Runtime resolves exactly one `IChatModelClient`: `OpenAiCompatibleChatModelClient`.
 
 ```text
 src/
@@ -178,17 +308,17 @@ dotnet build --no-restore -warnaserror
 dotnet test --no-build
 ```
 
-Normal tests use deterministic local HTTP servers and do not call Xiaomi or require `MIMO_API_KEY`.
+Normal tests use deterministic local HTTP servers and do not call an external provider.
 
 ### Optional Live Xiaomi Test
 
-The live test reads **only** environment variables and never reads the user's stored credential. It runs only when both `MIMO_API_KEY` is present and `AGENTPULSE_RUN_LIVE_TESTS` is exactly `1`. This explicit second flag prevents a normal `dotnet test` from making a paid request when an API key is permanently configured.
+The live test reads only environment variables and never reads the stored credential. It runs only when both `MIMO_API_KEY` is present and `AGENTPULSE_RUN_LIVE_TESTS` is exactly `1`.
 
 PowerShell:
 
 ```powershell
-$env:MIMO_API_KEY="..."
-$env:AGENTPULSE_RUN_LIVE_TESTS="1"
+$env:MIMO_API_KEY = "..."
+$env:AGENTPULSE_RUN_LIVE_TESTS = "1"
 dotnet test --no-build --filter "Category=LiveXiaomi"
 ```
 
@@ -209,14 +339,14 @@ MIMO_API_KEY="..." AGENTPULSE_RUN_LIVE_TESTS="1" \
 dotnet run --project src/AgentPulse.Cli -- run "Reply with exactly: Hello"
 ```
 
-When no credential exists, the CLI requests it with hidden input. After a successful `2xx` provider response, it is protected in the current user's credential store. A later run reuses it without another prompt.
+When no credential exists for the current endpoint, the CLI requests it with hidden input. After a successful provider response, it is protected for that endpoint scope.
 
-### Environment Variable
+### Default Xiaomi Environment Variable
 
 PowerShell:
 
 ```powershell
-$env:MIMO_API_KEY="..."
+$env:MIMO_API_KEY = "..."
 dotnet run --project src/AgentPulse.Cli -- run "Explain this project"
 ```
 
@@ -228,63 +358,15 @@ MIMO_API_KEY="..." dotnet run --project src/AgentPulse.Cli -- run "Explain this 
 
 ### Redirected Standard Input
 
-A redirected process cannot securely read a missing API key from the same stream. Configure a stored credential or `MIMO_API_KEY` first:
-
-```powershell
-$env:MIMO_API_KEY="..."
-"Explain this project" | dotnet run --project src/AgentPulse.Cli -- run
-```
-
-Without either credential source, the CLI exits non-zero and directs the user to set `MIMO_API_KEY` or run `agentpulse auth set`.
+A redirected process cannot securely read a missing credential from the same stream. Configure the current endpoint with `auth set` or its configured API-key environment variable first.
 
 ### Credential Commands
 
-Store or replace a credential with hidden input:
-
 ```bash
 dotnet run --project src/AgentPulse.Cli -- auth set
-```
-
-Show only the configured source status, never key metadata:
-
-```bash
 dotnet run --project src/AgentPulse.Cli -- auth status
-```
-
-Remove the stored credential without changing the environment variable:
-
-```bash
 dotnet run --project src/AgentPulse.Cli -- auth clear
 ```
-
----
-
-## Configuration
-
-Non-secret provider settings can be overridden through configuration or environment variables:
-
-```text
-AgentPulse:Xiaomi:BaseUrl
-AgentPulse:Xiaomi:Model
-AgentPulse:Xiaomi:MaxCompletionTokens
-AgentPulse:Xiaomi:ThinkingMode
-AgentPulse:Xiaomi:FirstByteTimeout
-AgentPulse:Xiaomi:StreamIdleTimeout
-AgentPulse:Streaming:FlushInterval
-AgentPulse:Streaming:FlushCharacterThreshold
-AgentPulse:Streaming:LeaseRenewInterval
-AgentPulse:Persistence:DatabasePath
-```
-
-Environment-variable examples use double underscores, such as:
-
-```text
-AgentPulse__Xiaomi__BaseUrl
-AgentPulse__Xiaomi__Model
-AgentPulse__Persistence__DatabasePath
-```
-
-The default database is stored in the current user's local application-data directory. At runtime, an absolute override is used directly and a relative override is normalized against the process current directory. At design time, an override must be absolute; relative paths are rejected to prevent database creation inside the repository. `MIMO_API_KEY` is intentionally separate from bindable JSON options.
 
 ---
 
@@ -298,28 +380,34 @@ The default database is stored in the current user's local application-data dire
 | 3 | ✅ | Project Context | Paths, Git discovery, worktrees, deterministic project IDs |
 | 4 | ✅ | Session and Message Lifecycle | Ordered history, run lease, recovery, transaction boundaries |
 | 5 | ✅ | Model Request Construction | Provider-independent messages, history, project system context |
-| 6 | ✅ | Real Xiaomi Streaming and Secure Credentials | HTTP/SSE streaming, hidden credential input, partial persistence, heartbeat, full vertical flow |
-| 7 | ⬜ | Session Continuation and CLI Expansion | Explicit continuation, session selection, and scoped CLI options |
-| 8 | ⬜ | Reliability, Recovery, and Provider Hardening | Additional crash recovery, compatibility, and provider edge cases |
-| 9 | ⬜ | Final Compatibility, Packaging, and Release | Baseline comparison, packaging, final documentation, and release readiness |
+| 6 | ✅ | Real Xiaomi Streaming and Secure Credentials | Real HTTP streaming, SSE, hidden credentials, partial persistence, full vertical flow |
+| 7 | ✅ | OpenAI-Compatible Provider Generalization and Hardening | Generic transport, endpoint scope, redirect defense, error taxonomy, failure stages |
+| 8 | ⬜ | Session Continuation and Reliability | Explicit continuation, session selection, recovery and CLI reliability |
+| 9 | ⬜ | Final Compatibility, Packaging, and Release | Baseline comparison, process tests, packaging, final documentation, release readiness |
 
 Later phases remain planned and are not marked complete.
 
 ---
 
-## Phase 6 Test Coverage
+## Phase 7 Test Coverage
 
-Phase 6 adds deterministic coverage for:
+Phase 7 adds or preserves deterministic coverage for:
 
-- Credential resolution priority, hidden input, empty input, and cancellation
-- `auth set`, `auth status`, and idempotent `auth clear`
-- Encrypted credential persistence, corruption, atomic replacement, and Unix modes
-- Prompted-key persistence after `2xx` and stored-key removal after `401`/`403`
-- SSE fragmentation, multi-byte UTF-8, LF/CRLF, comments, multi-line data, usage, finish reasons, malformed JSON, incomplete streams, repeated completion, unsupported tool calls, and ignored reasoning content
-- Local HTTP transport requests, headers, DTO shape, `401`, `403`, `429`, `500`, partial disconnects, malformed data, first-byte timeout, idle timeout, and user cancellation
-- Streaming orchestration, exact delta concatenation, flush policy, partial failure/cancellation, finalization failures, heartbeat renewal, and lost leases
-- SQLite end-to-end vertical flow proving pre-request commits, separate `Hel`/`lo` rendering, final `Hello` persistence, completed message, idle session, and released lease
-- Explicitly opt-in live Xiaomi connectivity requiring both `MIMO_API_KEY` and `AGENTPULSE_RUN_LIVE_TESTS=1`
+- Default Xiaomi and generic Bearer provider profiles
+- JSON, environment-specific JSON, and environment-variable configuration precedence
+- Custom endpoint, path, model, authentication mode, header name, and API-key environment-variable name
+- Fail-fast validation and absence of a bindable API-key option
+- Credential scope normalization and isolation by host, scheme, port, authentication mode, and header name
+- Legacy Xiaomi credential migration and rejection for custom hosts
+- Scoped `auth set`, `auth status`, and idempotent `auth clear`
+- Redirect status handling and proof that the redirect target receives no request
+- OpenAI-compatible wrapped and unwrapped JSON errors, text, empty, malformed, and oversized bodies
+- Error taxonomy, retry metadata, request ID, and sensitive-data sanitization
+- SSE fragmentation, multi-byte UTF-8, multi-line data, completion, usage, malformed and incomplete streams
+- Before/after-first-token failure stages for protocol errors, timeout, and cancellation
+- HTTP cancellation observed by the local contract server
+- Partial-output preservation in the existing streaming persistence flow
+- Explicitly opt-in live Xiaomi connectivity only
 
 ---
 
@@ -334,17 +422,17 @@ Phase 6 adds deterministic coverage for:
 - UTC-only stored timestamps
 - Cancellation on all asynchronous boundaries
 - Database changes only through migrations
-- No premature tools, plugins, agent loops, or source editing
+- No premature registry, discovery, tools, plugins, agent loops, or source editing
 
 ---
 
 ## Project Status
 
 ```text
-Completed:  Phase 0 through Phase 6
-Next:       Phase 7 — Session Continuation and CLI Expansion
-Progress:   7 / 10 phases
+Completed: Phase 0 through Phase 7
+Progress: 8 / 10 phases
 ```
+
 ---
 
 ## Contributing
@@ -362,4 +450,3 @@ Found an issue or interested in contributing or collaborating? Contact me on Tel
 ## License
 
 AgentPulse is licensed under the [MIT License](LICENSE).
-

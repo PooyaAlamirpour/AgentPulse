@@ -74,9 +74,11 @@ public sealed class XiaomiChatModelClientTests
     }
 
     [Theory]
-    [InlineData(401)]
-    [InlineData(403)]
-    public async Task Authentication_failure_rejects_credential_without_leaking_secret(int statusCode)
+    [InlineData(401, ModelProviderErrorCode.Authentication)]
+    [InlineData(403, ModelProviderErrorCode.PermissionDenied)]
+    public async Task Authentication_failure_rejects_credential_without_leaking_secret(
+        int statusCode,
+        ModelProviderErrorCode expectedCode)
     {
         await using var server = new LocalHttpServer(async (stream, request, cancellationToken) =>
         {
@@ -92,7 +94,7 @@ public sealed class XiaomiChatModelClientTests
         var exception = await Assert.ThrowsAsync<ModelProviderException>(() =>
             ReadAllAsync(client));
 
-        Assert.Equal(ModelProviderErrorCode.Authentication, exception.Code);
+        Assert.Equal(expectedCode, exception.Code);
         Assert.DoesNotContain(Secret, exception.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("api-key", exception.Message, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("authorization", exception.Message, StringComparison.OrdinalIgnoreCase);
