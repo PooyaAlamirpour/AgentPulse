@@ -224,8 +224,8 @@ public sealed class SessionRunLifecycleTests
             CaptureAsync(firstTask),
             CaptureAsync(secondTask));
 
-        Assert.Single(outcomes.Where(outcome => outcome.Result is not null));
-        var rejectedOutcome = Assert.Single(outcomes.Where(outcome => outcome.Exception is not null));
+        Assert.Single(outcomes, outcome => outcome.Result is not null);
+        var rejectedOutcome = Assert.Single(outcomes, outcome => outcome.Exception is not null);
         Assert.NotNull(rejectedOutcome.Exception);
         Assert.Equal(
             SessionRunErrorCode.SessionAlreadyRunning,
@@ -335,7 +335,8 @@ public sealed class SessionRunLifecycleTests
         }
 
         var recoveredAssistant = Assert.Single(
-            recovered.OrderedPreviousHistory.Where(message => message.Role == MessageRole.Assistant));
+            recovered.OrderedPreviousHistory,
+            message => message.Role == MessageRole.Assistant);
         Assert.Equal(MessageStatus.Failed, recoveredAssistant.Status);
         Assert.Equal("partial response", AssertText(recoveredAssistant));
         Assert.NotNull(recoveredAssistant.FailureReason);

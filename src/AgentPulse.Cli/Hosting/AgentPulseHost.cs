@@ -7,6 +7,7 @@ using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Console;
 using AgentPulse.Application.Processes;
+using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.SessionRuns;
 using AgentPulse.Infrastructure;
 using AgentPulse.Application.ProjectContexts;
@@ -80,6 +81,8 @@ public static class AgentPulseHost
         builder.Services.AddScoped<IPrepareSessionRun, PrepareSessionRun>();
         builder.Services.AddScoped<IEndSessionRun, EndSessionRun>();
         builder.Services.AddScoped<IRenewSessionRunLease, RenewSessionRunLease>();
+        builder.Services.AddSingleton<IChatModelHistoryPolicy, ChatModelHistoryPolicy>();
+        builder.Services.AddSingleton<IChatModelRequestBuilder, ChatModelRequestBuilder>();
 
         builder.Services.AddSingleton<IConsole>(console ?? new SystemConsole());
         builder.Services.AddSingleton<IPromptInputReader, PromptInputReader>();

@@ -2,10 +2,10 @@
 
 **AgentPulse** is an open-source, cross-platform .NET 8 command-line project for building a project-aware AI assistant with persistent conversations, streaming responses, Git-aware context, and reliable recovery from failures or cancellation.
 
-The project is being developed incrementally through a clearly defined 10-phase roadmap. The current implementation has completed **Phase 3**, which means the core architecture, CLI foundation, persistence model, and project-context discovery are in place.
+The project is being developed incrementally through a clearly defined 10-phase roadmap. The current implementation has completed **Phase 5**, which means session lifecycle, ordered history, and provider-independent model-request construction are in place alongside the earlier foundation.
 
-> **Development status:** Active development — **4 of 10 phases completed**  
-> **Current milestone:** Phase 3 — Project Context  
+> **Development status:** Active development — **6 of 10 phases completed**  
+> **Current milestone:** Phase 5 — Model Request Construction  
 > **AI provider status:** Not connected yet; real model streaming is introduced in later phases.
 
 ---
@@ -238,7 +238,7 @@ PowerShell example:
 "Explain this project" | dotnet run --project src/AgentPulse.Cli -- run
 ```
 
-> At the current milestone, the CLI validates and accepts prompt input, but it does not call an AI model yet. Model request construction, streaming, provider integration, and complete end-to-end execution are scheduled for later phases.
+> At the current milestone, provider-independent model requests can be built from project context and persisted conversation messages, but the CLI does not call an AI model yet. Streaming, provider integration, and complete end-to-end execution are scheduled for later phases.
 
 ---
 
@@ -251,7 +251,7 @@ PowerShell example:
 | 2 | ✅ | Domain and Persistence | Domain entities, SQLite, EF Core, migrations, repositories, transactions |
 | 3 | ✅ | Project Context | Path normalization, Git discovery, worktrees, stable project identifiers |
 | 4 | ✅ | Session and Message Lifecycle | Create/continue sessions, ordered history, run locking, recovery |
-| 5 | ⬜ | Model Request Construction | Provider-independent contracts, system context, history conversion |
+| 5 | ✅ | Model Request Construction | Provider-independent contracts, system context, history conversion |
 | 6 | ⬜ | Streaming with a Fake Provider | Stream events, console deltas, partial persistence, cancellation |
 | 7 | ⬜ | OpenAI-Compatible Provider | HTTP streaming, SSE parser, configuration, provider error handling |
 | 8 | ⬜ | End-to-End Vertical Flow | Full prompt orchestration, persistence, streaming, session continuation |
@@ -330,7 +330,7 @@ Legend:
 - Recover Sessions abandoned in the Running state
 - Define clear transaction boundaries
 
-### ⬜ Phase 5 — Model Request Construction
+### ✅ Phase 5 — Model Request Construction
 
 - Define provider-independent model contracts
 - Define stream events, usage, and finish reasons
@@ -473,9 +473,9 @@ dotnet test --no-build
 ## Project Status
 
 ```text
-Completed:  Phase 0 تا Phase 4
-Next:       Phase 5 — Model Request Construction
-Progress:   5 / 10 phases
+Completed:  Phase 0, Phase 1, Phase 2, Phase 3, Phase 4, Phase 5
+Next:       Phase 6 — Streaming with a Fake Provider
+Progress:   6 / 10 phases
 ```
 
-AgentPulse is currently a strong architectural foundation rather than a finished AI assistant. The remaining phases will connect session management, model-request construction, streaming, a real provider, and the complete CLI workflow.
+AgentPulse is currently a strong architectural foundation rather than a finished AI assistant. The remaining phases will connect streaming, a real provider, the complete CLI workflow, and final compatibility hardening.

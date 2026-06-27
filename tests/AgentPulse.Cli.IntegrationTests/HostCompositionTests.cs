@@ -7,6 +7,7 @@ using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Hosting;
 using AgentPulse.Application.Processes;
+using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.Persistence;
 using AgentPulse.Application.SessionRuns;
 using AgentPulse.Infrastructure.Persistence;
@@ -65,6 +66,8 @@ public sealed class HostCompositionTests
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IPrepareSessionRun>());
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IEndSessionRun>());
             Assert.NotNull(scope.ServiceProvider.GetRequiredService<IRenewSessionRunLease>());
+            Assert.NotNull(host.Services.GetRequiredService<IChatModelHistoryPolicy>());
+            Assert.NotNull(host.Services.GetRequiredService<IChatModelRequestBuilder>());
 
             Assert.NotNull(host.Services.GetRequiredService<IPromptInputReader>());
             Assert.NotNull(host.Services.GetRequiredService<IRunCommandHandler>());
