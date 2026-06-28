@@ -107,7 +107,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
             }
         }
 
-        if (_console.IsInputRedirected)
+        if (!_console.IsInteractive)
         {
             throw new CredentialResolutionException(
                 $"API credential is not configured for the current model endpoint. Set {_options.ApiKeyEnvironmentVariable} or run 'agentpulse auth set'.");

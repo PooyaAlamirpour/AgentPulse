@@ -1,5 +1,5 @@
 <Project>
-  <ItemGroup>
+  <ItemGroup Condition="'$(IsTestProject)' == 'true'">
     <Using Include="Xunit" />
   </ItemGroup>
 </Project>

@@ -4,15 +4,29 @@ namespace AgentPulse.Cli.IntegrationTests;
 
 internal sealed class TestConsole : IConsole
 {
-    public TestConsole(string input = "", bool isInputRedirected = false)
-        : this(new StringReader(input), isInputRedirected)
+    public TestConsole(
+        string input = "",
+        bool isInputRedirected = false,
+        bool isOutputRedirected = false,
+        bool isErrorRedirected = false)
+        : this(
+            new StringReader(input),
+            isInputRedirected,
+            isOutputRedirected,
+            isErrorRedirected)
     {
     }
 
-    public TestConsole(TextReader input, bool isInputRedirected)
+    public TestConsole(
+        TextReader input,
+        bool isInputRedirected,
+        bool isOutputRedirected = false,
+        bool isErrorRedirected = false)
     {
         In = input;
         IsInputRedirected = isInputRedirected;
+        IsOutputRedirected = isOutputRedirected;
+        IsErrorRedirected = isErrorRedirected;
     }
 
     public TextReader In { get; }
@@ -26,4 +40,12 @@ internal sealed class TestConsole : IConsole
     public TextWriter Error => StandardError;
 
     public bool IsInputRedirected { get; }
+
+    public bool IsOutputRedirected { get; }
+
+    public bool IsErrorRedirected { get; }
+
+    public bool IsInteractive =>
+        !IsInputRedirected &&
+        !IsOutputRedirected;
 }

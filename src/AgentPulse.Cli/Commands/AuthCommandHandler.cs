@@ -2,6 +2,7 @@ using AgentPulse.Cli.Console;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentPulse.Cli.Commands;
 
@@ -12,6 +13,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
     private readonly ILegacyProviderCredentialStore _legacyCredentialStore;
     private readonly ISecretInputReader _secretInputReader;
     private readonly IConsole _console;
+    private readonly ICliErrorRenderer _errorRenderer;
     private readonly OpenAiCompatibleModelOptions _options;
     private readonly ProviderCredentialScope _scope;
 
@@ -26,7 +28,8 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             NullLegacyProviderCredentialStore.Instance,
             secretInputReader,
             console,
-            new OpenAiCompatibleModelOptions())
+            new OpenAiCompatibleModelOptions(),
+            CreateDefaultErrorRenderer(console))
     {
     }
 
@@ -42,7 +45,8 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
             NullLegacyProviderCredentialStore.Instance,
             secretInputReader,
             console,
-            options)
+            options,
+            CreateDefaultErrorRenderer(console))
     {
     }
 
@@ -53,6 +57,25 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         ISecretInputReader secretInputReader,
         IConsole console,
         OpenAiCompatibleModelOptions options)
+        : this(
+            environmentVariables,
+            credentialStore,
+            legacyCredentialStore,
+            secretInputReader,
+            console,
+            options,
+            CreateDefaultErrorRenderer(console))
+    {
+    }
+
+    public AuthCommandHandler(
+        IEnvironmentVariableReader environmentVariables,
+        IProviderCredentialStore credentialStore,
+        ILegacyProviderCredentialStore legacyCredentialStore,
+        ISecretInputReader secretInputReader,
+        IConsole console,
+        OpenAiCompatibleModelOptions options,
+        ICliErrorRenderer errorRenderer)
     {
         _environmentVariables = environmentVariables ??
             throw new ArgumentNullException(nameof(environmentVariables));
@@ -63,6 +86,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         _secretInputReader = secretInputReader ??
             throw new ArgumentNullException(nameof(secretInputReader));
         _console = console ?? throw new ArgumentNullException(nameof(console));
+        _errorRenderer = errorRenderer ?? throw new ArgumentNullException(nameof(errorRenderer));
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _options.Validate();
         _scope = _options.CreateCredentialScope();
@@ -84,47 +108,28 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         }
         catch (SecretInputCancelledException)
         {
-            await _console.Error.WriteLineAsync(
-                "Operation cancelled.".AsMemory(),
-                CancellationToken.None);
-            await _console.Error.FlushAsync(CancellationToken.None);
-            return ExitCodes.Cancelled;
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            return await _errorRenderer.RenderCancellationAsync(cleanup.Token);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await _console.Error.WriteLineAsync(
-                "Operation cancelled.".AsMemory(),
-                CancellationToken.None);
-            await _console.Error.FlushAsync(CancellationToken.None);
-            return ExitCodes.Cancelled;
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            return await _errorRenderer.RenderCancellationAsync(cleanup.Token);
         }
-        catch (ProviderCredentialValidationException exception)
+        catch (Exception exception)
+            when (exception is ProviderCredentialValidationException or ProviderCredentialStoreException)
         {
-            await _console.Error.WriteLineAsync(
-                exception.Message.AsMemory(),
-                cancellationToken);
-            await _console.Error.FlushAsync(cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (ProviderCredentialStoreException exception)
-        {
-            await _console.Error.WriteLineAsync(
-                exception.Message.AsMemory(),
-                cancellationToken);
-            await _console.Error.FlushAsync(cancellationToken);
-            return ExitCodes.Failure;
+            return await _errorRenderer.RenderAsync(exception, cancellationToken);
         }
     }
 
     private async Task<int> SetAsync(CancellationToken cancellationToken)
     {
-        if (_console.IsInputRedirected)
+        if (!_console.IsInteractive)
         {
-            await _console.Error.WriteLineAsync(
-                "The API credential must be entered from an interactive terminal.".AsMemory(),
+            return await _errorRenderer.RenderConfigurationAsync(
+                "The API credential must be entered from an interactive terminal.",
                 cancellationToken);
-            await _console.Error.FlushAsync(cancellationToken);
-            return ExitCodes.Failure;
         }
 
         await _console.Error.WriteAsync(
@@ -191,11 +196,16 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
         string subcommand,
         CancellationToken cancellationToken)
     {
-        await _console.Error.WriteLineAsync(
-            $"Unknown auth command: {subcommand}".AsMemory(),
+        return await _errorRenderer.RenderUsageAsync(
+            $"Unknown auth command: {subcommand}",
             cancellationToken);
-        await _console.Error.FlushAsync(cancellationToken);
-        return ExitCodes.Failure;
+    }
+
+    private static ICliErrorRenderer CreateDefaultErrorRenderer(IConsole console)
+    {
+        return new CliErrorRenderer(
+            console,
+            NullLogger<CliErrorRenderer>.Instance);
     }
 
     private sealed class NullLegacyProviderCredentialStore : ILegacyProviderCredentialStore

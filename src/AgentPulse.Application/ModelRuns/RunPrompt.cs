@@ -51,9 +51,10 @@ public sealed class RunPrompt(
         options.Validate();
         var model = request.ModelOverride?.Trim() ?? modelDefaults.Model;
 
-        var projectContext = await projectContextFactory.CreateForRunAsync(
-            request.ProjectPath,
-            cancellationToken);
+        var projectContext = request.ResolvedProjectContext ??
+            await projectContextFactory.CreateForRunAsync(
+                request.ProjectPath,
+                cancellationToken);
         var prepared = await prepareSessionRun.ExecuteAsync(
             new PrepareSessionRunRequest(
                 projectContext,
@@ -860,7 +861,8 @@ public sealed class RunPrompt(
             ModelRunException => exception,
             ModelProviderException providerException => new ModelRunException(
                 ModelRunErrorCode.ProviderFailure,
-                GetPublicProviderMessage(providerException.Code)),
+                GetPublicProviderMessage(providerException.Code),
+                providerException.Code),
             ModelProviderOperationCanceledException => new ModelRunException(
                 ModelRunErrorCode.ProviderCancelled,
                 "The model provider cancelled the request before completion."),

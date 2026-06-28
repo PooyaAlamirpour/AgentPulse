@@ -9,4 +9,12 @@ public sealed class SystemConsole : IConsole
     public TextWriter Error => global::System.Console.Error;
 
     public bool IsInputRedirected => global::System.Console.IsInputRedirected;
+
+    public bool IsOutputRedirected => global::System.Console.IsOutputRedirected;
+
+    public bool IsErrorRedirected => global::System.Console.IsErrorRedirected;
+
+    public bool IsInteractive =>
+        !IsInputRedirected &&
+        !IsOutputRedirected;
 }

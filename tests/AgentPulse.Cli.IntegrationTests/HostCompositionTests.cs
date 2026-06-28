@@ -108,7 +108,7 @@ public sealed class HostCompositionTests
         }
         finally
         {
-            await host.StopAsync(CancellationToken.None);
+            await AgentPulseHostShutdown.StopAsync(host, console);
             if (Directory.Exists(tempRoot))
             {
                 Directory.Delete(tempRoot, recursive: true);
@@ -189,7 +189,7 @@ public sealed class HostCompositionTests
         }
         finally
         {
-            await host.StopAsync(CancellationToken.None);
+            await AgentPulseHostShutdown.StopAsync(host, console);
             if (Directory.Exists(tempRoot))
             {
                 Directory.Delete(tempRoot, recursive: true);

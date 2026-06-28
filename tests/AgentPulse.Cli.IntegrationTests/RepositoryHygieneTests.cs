@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace AgentPulse.Cli.IntegrationTests;
 
 public sealed class RepositoryHygieneTests
@@ -46,15 +48,29 @@ public sealed class RepositoryHygieneTests
     }
 
     [Fact]
-    public void Active_documentation_marks_phase_eight_complete_with_final_vertical_flow()
+    public void Active_documentation_marks_phase_nine_complete_with_cli_hardening()
     {
         var repositoryRoot = FindRepositoryRoot();
         var readme = File.ReadAllText(Path.Combine(repositoryRoot, "README.md"));
         var map = File.ReadAllText(Path.Combine(repositoryRoot, "docs", "node-to-dotnet-map.md"));
 
         Assert.Contains("| 8 | ✅ |", readme, StringComparison.Ordinal);
-        Assert.Contains("Final Vertical Prompt Flow and Session Reliability", readme, StringComparison.Ordinal);
+        Assert.Contains("| 9 | 🟡 |", readme, StringComparison.Ordinal);
+        Assert.Contains("CLI Hardening and Compatibility Verification", readme, StringComparison.Ordinal);
         Assert.Contains("OpenAiCompatibleChatModelClient", readme, StringComparison.Ordinal);
+        Assert.Contains(
+            "Phase 9 implementation is complete",
+            readme,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains(
+            "Native verification for this revision remains pending",
+            readme,
+            StringComparison.OrdinalIgnoreCase);
+
+        Assert.Contains("Windows", readme, StringComparison.Ordinal);
+        Assert.Contains("Linux", readme, StringComparison.Ordinal);
+        Assert.Contains("macOS", readme, StringComparison.Ordinal);
         Assert.Contains("--dir", map, StringComparison.Ordinal);
         Assert.Contains("--model", map, StringComparison.Ordinal);
         Assert.Contains("--session", map, StringComparison.Ordinal);
@@ -76,6 +92,78 @@ public sealed class RepositoryHygieneTests
         Assert.Contains("--session", phaseEight, StringComparison.Ordinal);
         Assert.DoesNotContain("آینده", phaseEight, StringComparison.Ordinal);
         Assert.Contains("Release اتمیک مالک‌محور", phaseEight, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public void Phase_nine_compatibility_and_local_execution_documents_are_present()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var compatibilityPath = Path.Combine(repositoryRoot, "docs", "cli-compatibility.md");
+        var localCliPath = Path.Combine(repositoryRoot, "docs", "local-cli.md");
+
+        Assert.True(
+            File.Exists(compatibilityPath),
+            "Expected Phase 9 compatibility matrix docs/cli-compatibility.md to exist.");
+        Assert.True(
+            File.Exists(localCliPath),
+            "Expected local CLI guide docs/local-cli.md to exist.");
+
+        var compatibility = File.ReadAllText(compatibilityPath);
+        var localCli = File.ReadAllText(localCliPath);
+        Assert.Contains("Intentionally Different", compatibility, StringComparison.Ordinal);
+        Assert.Contains("| `124` | Provider timeout |", compatibility, StringComparison.Ordinal);
+        Assert.Contains("stdout is exactly", compatibility, StringComparison.Ordinal);
+        Assert.Contains("dotnet build --no-restore -warnaserror", localCli, StringComparison.Ordinal);
+        Assert.Contains("Logging__LogLevel__Default", localCli, StringComparison.Ordinal);
+        Assert.Contains("exit code `130`", localCli, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Phase_nine_tests_do_not_pass_via_platform_early_return()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var testRoots = new[]
+        {
+            Path.Combine(repositoryRoot, "tests", "AgentPulse.Cli.IntegrationTests"),
+            Path.Combine(repositoryRoot, "tests", "AgentPulse.Cli.TestSupport"),
+        };
+        var earlyReturnPattern = new Regex(
+            @"if\s*\(\s*!?\s*OperatingSystem\.(?:IsWindows|IsLinux|IsMacOS)\(\)\s*\)\s*\{\s*return\s*;",
+            RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        var violations = testRoots
+            .SelectMany(path => Directory.EnumerateFiles(path, "*.cs", SearchOption.AllDirectories))
+            .Where(path => earlyReturnPattern.IsMatch(File.ReadAllText(path)))
+            .Select(path => Path.GetRelativePath(repositoryRoot, path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Empty(violations);
+    }
+
+    [Fact]
+    public void Windows_interrupt_launcher_does_not_combine_new_console_and_new_process_group()
+    {
+        var repositoryRoot = FindRepositoryRoot();
+        var supportRoot = Path.Combine(
+            repositoryRoot,
+            "tests",
+            "AgentPulse.Cli.TestSupport");
+        var source = string.Join(
+            '\n',
+            Directory.EnumerateFiles(supportRoot, "*.cs", SearchOption.AllDirectories)
+                .Select(File.ReadAllText));
+
+        Assert.DoesNotContain(
+            "CreateNewConsole" + " | " + "CreateNewProcessGroup",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CreateNewProcessGroup | CreateUnicodeEnvironment",
+            source,
+            StringComparison.Ordinal);
+        Assert.Contains("GenerateConsoleCtrlEvent", source, StringComparison.Ordinal);
+        Assert.Contains("SetProcessGroup", source, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -9,4 +9,10 @@ public interface IConsole
     TextWriter Error { get; }
 
     bool IsInputRedirected { get; }
+
+    bool IsOutputRedirected { get; }
+
+    bool IsErrorRedirected { get; }
+
+    bool IsInteractive { get; }
 }

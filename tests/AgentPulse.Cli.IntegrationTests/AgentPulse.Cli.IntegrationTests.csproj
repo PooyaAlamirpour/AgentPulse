@@ -16,6 +16,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/AgentPulse.Cli/AgentPulse.Cli.csproj" />
+    <ProjectReference Include="../AgentPulse.Cli.TestSupport/AgentPulse.Cli.TestSupport.csproj" />
   </ItemGroup>
 
   <ItemGroup>

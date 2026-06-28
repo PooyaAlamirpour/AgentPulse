@@ -598,3 +598,9 @@ Metrics، Telemetry و Control Plane
 - زمان دقیق آزادشدن Run lock در همه مسیرهای خطا
 - جداسازی stdout/stderr در همه شاخه‌های Interactive و Non-Interactive
 
+
+---
+
+## Phase 9 compatibility disposition
+
+The executable Phase 9 decisions, stable exit-code contract, stdout/stderr rules, intentional differences, and process-level test mapping are maintained in [`cli-compatibility.md`](cli-compatibility.md). Local execution and configuration instructions are maintained in [`local-cli.md`](local-cli.md).

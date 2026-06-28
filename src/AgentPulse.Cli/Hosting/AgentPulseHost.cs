@@ -62,10 +62,11 @@ public static class AgentPulseHost
         configureConfiguration?.Invoke(builder.Configuration);
 
         builder.Logging.ClearProviders();
-        builder.Logging.SetMinimumLevel(LogLevel.Warning);
+        builder.Logging.AddConfiguration(builder.Configuration.GetSection("Logging"));
         builder.Logging.AddSimpleConsole(options =>
         {
             options.SingleLine = true;
+            options.ColorBehavior = LoggerColorBehavior.Disabled;
         });
         builder.Services.Configure<ConsoleLoggerOptions>(options =>
         {
@@ -157,6 +158,7 @@ public static class AgentPulseHost
         builder.Services.AddSingleton<ISecretInputReader, SystemSecretInputReader>();
         builder.Services.AddSingleton<IProviderCredentialResolver, ProviderCredentialResolver>();
         builder.Services.AddSingleton<IAuthCommandHandler, AuthCommandHandler>();
+        builder.Services.AddSingleton<ICliErrorRenderer, CliErrorRenderer>();
         builder.Services.AddSingleton<IRunCommandHandler, RunCommandHandler>();
         builder.Services.AddSingleton<CliApplication>();
 

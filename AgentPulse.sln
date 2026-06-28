@@ -23,6 +23,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentPulse.Infrastructure.T
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentPulse.Cli.IntegrationTests", "tests\AgentPulse.Cli.IntegrationTests\AgentPulse.Cli.IntegrationTests.csproj", "{708B5747-BE75-4BD8-9B30-EFD71F429B2A}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentPulse.Cli.TestSupport", "tests\AgentPulse.Cli.TestSupport\AgentPulse.Cli.TestSupport.csproj", "{8F37C8DF-57FD-41E8-967F-716D613B4EB5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -64,6 +66,10 @@ Global
 		{708B5747-BE75-4BD8-9B30-EFD71F429B2A}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{708B5747-BE75-4BD8-9B30-EFD71F429B2A}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{708B5747-BE75-4BD8-9B30-EFD71F429B2A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8F37C8DF-57FD-41E8-967F-716D613B4EB5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8F37C8DF-57FD-41E8-967F-716D613B4EB5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8F37C8DF-57FD-41E8-967F-716D613B4EB5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8F37C8DF-57FD-41E8-967F-716D613B4EB5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{673AD0A7-F65A-4FA7-9469-15F788C396D6} = {450AD354-1A88-42B9-A0C6-947B7567A372}
@@ -74,5 +80,6 @@ Global
 		{5E499519-465B-4FE6-81E9-E2C385F5C156} = {E6E7CACA-6535-4885-AF69-2E884122DB47}
 		{5F060101-5B4C-4C61-AA03-13AC34BBE45C} = {E6E7CACA-6535-4885-AF69-2E884122DB47}
 		{708B5747-BE75-4BD8-9B30-EFD71F429B2A} = {E6E7CACA-6535-4885-AF69-2E884122DB47}
+		{8F37C8DF-57FD-41E8-967F-716D613B4EB5} = {E6E7CACA-6535-4885-AF69-2E884122DB47}
 	EndGlobalSection
 EndGlobal

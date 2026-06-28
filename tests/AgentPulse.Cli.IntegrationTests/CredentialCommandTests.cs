@@ -296,7 +296,7 @@ public sealed class CredentialCommandTests
 
         var exitCode = await handler.HandleAsync("set");
 
-        Assert.Equal(ExitCodes.Failure, exitCode);
+        Assert.Equal(ExitCodes.Configuration, exitCode);
         Assert.Equal(0, store.SaveCount);
         Assert.Null(store.StoredCredential);
         Assert.DoesNotContain(

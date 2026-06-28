@@ -2,10 +2,10 @@
 
 **AgentPulse** is an open-source, cross-platform .NET 8 command-line assistant with project-aware prompts, persistent conversations, real-time model streaming, secure endpoint-scoped credentials, Git-aware context, and recovery-safe session state.
 
-The implementation is developed through a 10-phase roadmap. **Phase 8 is complete**: the CLI now connects canonical project resolution, session creation or continuation, a cross-process session run lease, ordered history construction, request-level model overrides, immediate console streaming, periodic partial persistence, and terminal completion, cancellation, or failure handling.
+The implementation is developed through a 10-phase roadmap. **Phase 9 implementation is complete**: the CLI now has a documented Node compatibility matrix, centralized exit-code and error rendering, a pipe-safe stdout/stderr contract, hardened interactive and non-interactive input, configurable stderr-only logging, secret redaction, and real-process coverage for failure, cancellation, partial persistence, and crash recovery. Native verification for this revision remains pending on Windows, Linux, and macOS.
 
-> **Development status:** Active development — **9 of 10 phases completed**
-> **Current milestone:** Phase 8 — Final Vertical Prompt Flow and Session Reliability
+> **Development status:** Roadmap implementation complete — **10 of 10 phases completed**
+> **Current milestone:** Phase 9 — CLI Hardening and Compatibility Verification
 > **Default provider profile:** Xiaomi MiMo, model `mimo-v2.5-pro`
 
 > [!WARNING]
@@ -30,8 +30,10 @@ The implementation is developed through a 10-phase roadmap. **Phase 8 is complet
 - Immediate streaming of model text to `stdout` with periodic partial persistence
 - Session metadata, errors, and credential prompts on `stderr`; successful runs print `Session ID: <id>` after streaming completes
 - A single final newline after successful completion
-- `Ctrl+C` cancellation with exit code `130`
-- Non-zero exit codes for provider, persistence, configuration, and input failures
+- `Ctrl+C` cancellation with exit code `130`, partial-response preservation, and owned-lease release
+- Stable exit codes for usage (`2`), configuration/credential (`3`), session (`4`), provider (`5`), timeout (`124`), cancellation (`130`), and unexpected failure (`1`)
+- Standard .NET logging configured through appsettings or environment variables, always rendered on `stderr` with ANSI disabled
+- Central safe error rendering with no raw provider body, prompt, history, authorization data, or credential disclosure
 - Endpoint-scoped credential commands:
   - `agentpulse auth set`
   - `agentpulse auth status`
@@ -404,15 +406,15 @@ dotnet run --project src/AgentPulse.Cli -- auth clear
 | 6 | ✅ | Real Xiaomi Streaming and Secure Credentials | Real HTTP streaming, SSE, hidden credentials, partial persistence, full vertical flow |
 | 7 | ✅ | OpenAI-Compatible Provider Generalization and Hardening | Generic transport, endpoint scope, redirect defense, error taxonomy, failure stages |
 | 8 | ✅ | Final Vertical Prompt Flow and Session Reliability | Project/session resolution, cross-process lease, history, model override, stdin, streaming checkpoints, terminal state handling |
-| 9 | ⬜ | Final Compatibility, Packaging, and Release | Baseline comparison, process tests, packaging, final documentation, release readiness |
+| 9 | 🟡 | CLI Hardening and Compatibility Verification | Implementation complete; native verification for this revision remains pending on Windows, Linux, and macOS |
 
-Later phases remain planned and are not marked complete.
+The Phase 0 through Phase 9 implementation roadmap is complete. Native Windows, Linux, and macOS verification must be rerun for this revision before Phase 9 is described as fully cross-platform verified. Product capabilities explicitly excluded from these phases remain out of scope.
 
 ---
 
-## Phase 8 Test Coverage
+## Phase 9 Test Coverage
 
-Phase 8 adds or preserves deterministic coverage for:
+Phase 9 adds or preserves deterministic coverage for:
 
 - Positional prompt parsing, redirected multiline Unicode `stdin`, option ordering, duplicate/unknown options, missing values, and validation failures
 - Relative, absolute, missing, file, and space-containing project directories plus duplicate-safe project get-or-create
@@ -427,6 +429,11 @@ Phase 8 adds or preserves deterministic coverage for:
 - Checkpoint persistence failure with failed terminal state where possible and unconditional owned-lease release
 - Real SQLite repositories and composition with a test-only controllable `IChatModelClient`; no fake provider is registered at runtime
 - Explicitly opt-in live Xiaomi connectivity only
+- Real-process exit-code coverage for parser, directory, session, configuration, credential, provider, timeout, cancellation, and unexpected failure categories
+- Separate stdout/stderr capture, logging-level verification, and secret-marker redaction across output and persisted failure metadata
+- Process termination after a persisted checkpoint followed by expired-lease recovery and a successful continuation
+
+The complete behavioral decisions are recorded in [`docs/cli-compatibility.md`](docs/cli-compatibility.md). Local build, configuration, stdin, session, logging, and Ctrl+C instructions are in [`docs/local-cli.md`](docs/local-cli.md).
 
 ---
 
@@ -448,8 +455,8 @@ Phase 8 adds or preserves deterministic coverage for:
 ## Project Status
 
 ```text
-Completed: Phase 0 through Phase 8
-Progress: 9 / 10 phases
+Implementation completed: Phase 0 through Phase 9
+Native verification for this revision: Windows, Linux, and macOS pending execution
 ```
 
 ---

@@ -10,6 +10,7 @@ public sealed class CliApplication(
     IPromptInputReader promptInputReader,
     IRunCommandHandler runCommandHandler,
     IAuthCommandHandler authCommandHandler,
+    ICliErrorRenderer errorRenderer,
     IOptions<CliOptions> options)
 {
     private const string EmptyPromptError =
@@ -34,10 +35,9 @@ public sealed class CliApplication(
 
         if (!string.Equals(arguments[0], "run", StringComparison.Ordinal))
         {
-            await WriteErrorAsync(
+            return await errorRenderer.RenderUsageAsync(
                 $"Unknown command: {arguments[0]}",
                 cancellationToken);
-            return ExitCodes.Failure;
         }
 
         if (arguments.Count == 2 && IsHelp(arguments[1]))
@@ -53,8 +53,9 @@ public sealed class CliApplication(
         }
         catch (RunCommandParsingException exception)
         {
-            await WriteErrorAsync(exception.Message, cancellationToken);
-            return ExitCodes.Failure;
+            return await errorRenderer.RenderUsageAsync(
+                exception.Message,
+                cancellationToken);
         }
 
         var prompt = await promptInputReader.ReadAsync(
@@ -63,8 +64,9 @@ public sealed class CliApplication(
 
         if (string.IsNullOrWhiteSpace(prompt))
         {
-            await WriteErrorAsync(EmptyPromptError, cancellationToken);
-            return ExitCodes.Failure;
+            return await errorRenderer.RenderUsageAsync(
+                EmptyPromptError,
+                cancellationToken);
         }
 
         return await runCommandHandler.HandleAsync(
@@ -89,10 +91,9 @@ public sealed class CliApplication(
 
         if (arguments.Count != 2)
         {
-            await WriteErrorAsync(
+            return await errorRenderer.RenderUsageAsync(
                 "Auth commands do not accept additional arguments.",
                 cancellationToken);
-            return ExitCodes.Failure;
         }
 
         return await authCommandHandler.HandleAsync(arguments[1], cancellationToken);
@@ -132,6 +133,19 @@ public sealed class CliApplication(
               stdout             Streamed model response only.
               stderr             Session ID after success, plus metadata and errors.
 
+            Behavior:
+              Redirected stdin is read only when no positional prompt is supplied.
+              Ctrl+C preserves any partial response and exits with code 130.
+              Only one active run is allowed per session.
+              Non-interactive runs never open a credential prompt.
+
+            Examples:
+              {{applicationName}} run "Explain this project"
+              {{applicationName}} run --dir <path> "Explain this project"
+              {{applicationName}} run --model <model> "Explain this project"
+              {{applicationName}} run --session <id> "Continue"
+              echo "Explain this project" | {{applicationName}} run
+
             Git repositories:
               Repository subdirectories resolve to the same canonical project root.
             """;
@@ -157,6 +171,19 @@ public sealed class CliApplication(
               stdout             Streamed model response only.
               stderr             Session ID after success, plus metadata and errors.
 
+            Behavior:
+              Redirected stdin is read only when no positional prompt is supplied.
+              Ctrl+C preserves any partial response and exits with code 130.
+              Only one active run is allowed per session.
+              Non-interactive runs never open a credential prompt.
+
+            Examples:
+              {{applicationName}} run "Explain this project"
+              {{applicationName}} run --dir <path> "Explain this project"
+              {{applicationName}} run --model <model> "Explain this project"
+              {{applicationName}} run --session <id> "Continue"
+              echo "Explain this project" | {{applicationName}} run
+
             Git repositories:
               Repository subdirectories resolve to the same canonical project root.
             """;
@@ -179,11 +206,4 @@ public sealed class CliApplication(
         await console.Out.FlushAsync(cancellationToken);
     }
 
-    private async Task WriteErrorAsync(
-        string message,
-        CancellationToken cancellationToken)
-    {
-        await console.Error.WriteLineAsync(message.AsMemory(), cancellationToken);
-        await console.Error.FlushAsync(cancellationToken);
-    }
 }

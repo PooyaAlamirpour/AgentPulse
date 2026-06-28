@@ -1,11 +1,14 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using AgentPulse.Cli.Commands;
+using AgentPulse.Cli.TestSupport;
 using Microsoft.Data.Sqlite;
 
 namespace AgentPulse.Cli.IntegrationTests;
 
-public sealed class CliProcessTests
+[Collection(ProcessInterruptCollection.Name)]
+public sealed partial class CliProcessTests
 {
     private static readonly Encoding Utf8WithoutBom =
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false);
@@ -70,7 +73,7 @@ public sealed class CliProcessTests
                 standardInput: string.Empty,
                 environment: environment);
 
-            Assert.NotEqual(0, result.ExitCode);
+            Assert.Equal(ExitCodes.Configuration, result.ExitCode);
             Assert.Equal(string.Empty, result.StandardOutput);
             Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
             Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
@@ -119,7 +122,7 @@ public sealed class CliProcessTests
     {
         var result = await RunCliAsync(["run"], standardInput: string.Empty);
 
-        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Equal(string.Empty, result.StandardOutput);
         Assert.Contains(
             "A prompt is required as an argument or redirected standard input.",
@@ -139,7 +142,7 @@ public sealed class CliProcessTests
             standardInput,
             CreateRunEnvironment(server.BaseUrl));
 
-        Assert.NotEqual(0, result.ExitCode);
+        Assert.Equal(ExitCodes.Usage, result.ExitCode);
         Assert.Equal(string.Empty, result.StandardOutput);
         Assert.Contains(
             "A prompt is required as an argument or redirected standard input.",
@@ -285,43 +288,73 @@ public sealed class CliProcessTests
     }
 
     [Fact]
-    public async Task Ctrl_c_cancels_a_running_cli_process_cleanly()
+    [Trait("Category", "ProcessInterrupt")]
+    public async Task Interrupt_before_first_token_cancels_the_run_and_allows_continuation()
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return;
-        }
-
-        await using var server = CliLocalModelServer.StartHanging();
-        using var process = StartCliProcessWithDefaultInterruptDisposition(
-            server.BaseUrl);
-        var standardOutputTask = process.StandardOutput.ReadToEndAsync();
-        var standardErrorTask = process.StandardError.ReadToEndAsync();
-
-        await WaitForCliProcessImageAsync(process.Id);
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        await SendInterruptAsync(process.Id);
-
-        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        const string secretMarker = "phase9-interactive-secret-marker";
+        var root = Path.Combine(
+            Path.GetTempPath(),
+            "AgentPulse Phase 9 Ctrl C Before Token",
+            Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        var databasePath = Path.Combine(root, "agentpulse.db");
 
         try
         {
-            await process.WaitForExitAsync(timeoutSource.Token);
+            await using var server = CliLocalModelServer.StartHanging();
+            var environment = CreateRunEnvironment(server.BaseUrl, root);
+            environment["MIMO_API_KEY"] = secretMarker;
+            using var process = CliInterruptProcessHarness.Start(
+                FindCliAssemblyPath(),
+                ["run", "hello"],
+                environment);
+            process.CloseInput();
+
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
+
+            await server.RequestReceived.WaitAsync(TimeSpan.FromSeconds(10));
+            var sessionId = await WaitForSingleSessionIdAsync(
+                databasePath,
+                CancellationToken.None);
+            await process.SendInterruptAsync();
+            await CliInterruptProcessHarness.WaitForExitAsync(process);
+
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
+            Assert.Equal(ExitCodes.Cancelled, process.ExitCode);
+            Assert.Equal(string.Empty, stdout);
+            Assert.Contains("cancelled", stderr, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(" at ", stderr, StringComparison.Ordinal);
+            Assert.DoesNotContain(secretMarker, stdout, StringComparison.Ordinal);
+            Assert.DoesNotContain(secretMarker, stderr, StringComparison.Ordinal);
+            await AssertTerminalRunStateAsync(
+                databasePath,
+                "Cancelled",
+                string.Empty,
+                expectedLeaseCount: 0);
+            Assert.Equal(
+                1,
+                await ReadScalarInt64Async(
+                    databasePath,
+                    "SELECT COUNT(*) FROM Messages WHERE Role = 'User';"));
+            Assert.DoesNotContain(
+                secretMarker,
+                await ReadDatabaseTextAsync(databasePath),
+                StringComparison.Ordinal);
+
+            await using var successServer = CliLocalModelServer.StartSuccessful();
+            var continued = await RunCliAsync(
+                ["run", "--session", sessionId.ToString("D"), "continue"],
+                string.Empty,
+                CreateRunEnvironment(successServer.BaseUrl, root));
+            Assert.Equal(ExitCodes.Success, continued.ExitCode);
         }
         finally
         {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
+            SqliteConnection.ClearAllPools();
+            await DeleteDirectoryWithRetryAsync(root);
         }
-
-        Assert.Equal(130, process.ExitCode);
-        Assert.Equal(string.Empty, await standardOutputTask);
-        Assert.Contains(
-            "Operation cancelled.",
-            await standardErrorTask,
-            StringComparison.Ordinal);
     }
 
     private static Dictionary<string, string?> CreateRunEnvironment(
@@ -339,6 +372,10 @@ public sealed class CliProcessTests
             ["AgentPulse__Model__BaseUrl"] = baseUrl,
             ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
             ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "security"),
+            ["HOME"] = Path.Combine(root, "home"),
+            ["USERPROFILE"] = Path.Combine(root, "profile"),
+            ["LOCALAPPDATA"] = Path.Combine(root, "local-app-data"),
+            ["XDG_DATA_HOME"] = Path.Combine(root, "xdg-data"),
         };
     }
 
@@ -377,7 +414,22 @@ public sealed class CliProcessTests
 
         using var process = new Process { StartInfo = startInfo };
         Assert.True(process.Start(), "The test Git process could not be started.");
-        await process.WaitForExitAsync(CancellationToken.None);
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+
+        try
+        {
+            await process.WaitForExitAsync(timeoutSource.Token);
+        }
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            throw new TimeoutException("The CLI process did not exit within the test timeout.");
+        }
         var error = await process.StandardError.ReadToEndAsync();
         Assert.True(process.ExitCode == 0, $"Git initialization failed: {error}");
     }
@@ -385,9 +437,10 @@ public sealed class CliProcessTests
     private static async Task<ProcessResult> RunCliAsync(
         IReadOnlyList<string> arguments,
         string? standardInput,
-        IReadOnlyDictionary<string, string?>? environment = null)
+        IReadOnlyDictionary<string, string?>? environment = null,
+        string? cliAssemblyPath = null)
     {
-        using var process = StartCliProcess(arguments, environment);
+        using var process = StartCliProcess(arguments, environment, cliAssemblyPath);
 
         if (standardInput is not null)
         {
@@ -398,8 +451,22 @@ public sealed class CliProcessTests
 
         var standardOutputTask = process.StandardOutput.ReadToEndAsync();
         var standardErrorTask = process.StandardError.ReadToEndAsync();
+        using var timeoutSource = new CancellationTokenSource(TimeSpan.FromSeconds(20));
 
-        await process.WaitForExitAsync(CancellationToken.None);
+        try
+        {
+            await process.WaitForExitAsync(timeoutSource.Token);
+        }
+        catch (OperationCanceledException) when (timeoutSource.IsCancellationRequested)
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync(CancellationToken.None);
+            }
+
+            throw new TimeoutException("The CLI process did not exit within the test timeout.");
+        }
 
         return new ProcessResult(
             process.ExitCode,
@@ -409,9 +476,10 @@ public sealed class CliProcessTests
 
     private static Process StartCliProcess(
         IReadOnlyList<string> arguments,
-        IReadOnlyDictionary<string, string?>? environment = null)
+        IReadOnlyDictionary<string, string?>? environment = null,
+        string? cliAssemblyPath = null)
     {
-        var cliAssemblyPath = FindCliAssemblyPath();
+        cliAssemblyPath ??= FindCliAssemblyPath();
         var dotnetHostPath = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
 
         var startInfo = new ProcessStartInfo
@@ -435,40 +503,6 @@ public sealed class CliProcessTests
         {
             startInfo.ArgumentList.Add(argument);
         }
-
-        var process = new Process { StartInfo = startInfo };
-        Assert.True(process.Start(), "The CLI process could not be started.");
-        return process;
-    }
-
-    private static Process StartCliProcessWithDefaultInterruptDisposition(string baseUrl)
-    {
-        var cliAssemblyPath = FindCliAssemblyPath();
-        var dotnetHostPath = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
-        var command = string.Join(
-            " ",
-            "trap - INT; exec",
-            ShellQuote(dotnetHostPath),
-            ShellQuote(cliAssemblyPath),
-            "run",
-            ShellQuote("hello"));
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "/bin/bash",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            StandardInputEncoding = Utf8WithoutBom,
-            StandardOutputEncoding = Utf8WithoutBom,
-            StandardErrorEncoding = Utf8WithoutBom,
-            CreateNoWindow = true,
-        };
-        ApplyBaseEnvironment(startInfo);
-        ApplyEnvironment(startInfo, CreateRunEnvironment(baseUrl));
-        startInfo.ArgumentList.Add("-c");
-        startInfo.ArgumentList.Add(command);
 
         var process = new Process { StartInfo = startInfo };
         Assert.True(process.Start(), "The CLI process could not be started.");
@@ -501,58 +535,6 @@ public sealed class CliProcessTests
                 startInfo.Environment[item.Key] = item.Value;
             }
         }
-    }
-
-    private static async Task WaitForCliProcessImageAsync(int processId)
-    {
-        var commandLinePath = $"/proc/{processId}/cmdline";
-
-        for (var attempt = 0; attempt < 50; attempt++)
-        {
-            if (File.Exists(commandLinePath))
-            {
-                var arguments = System.Text.Encoding.UTF8
-                    .GetString(await File.ReadAllBytesAsync(commandLinePath))
-                    .Split('\0', StringSplitOptions.RemoveEmptyEntries);
-
-                if (arguments.Length > 1 &&
-                    string.Equals(Path.GetFileName(arguments[0]), "dotnet", StringComparison.Ordinal) &&
-                    arguments.Skip(1).Any(static argument =>
-                        argument.EndsWith("agentpulse.dll", StringComparison.Ordinal)))
-                {
-                    return;
-                }
-            }
-
-            await Task.Delay(TimeSpan.FromMilliseconds(100));
-        }
-
-        throw new InvalidOperationException("Could not locate the running CLI process image.");
-    }
-
-    private static async Task SendInterruptAsync(int processId)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = "/bin/kill",
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-        };
-        startInfo.ArgumentList.Add("-INT");
-        startInfo.ArgumentList.Add(processId.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-        using var signalProcess = new Process { StartInfo = startInfo };
-        Assert.True(signalProcess.Start(), "The interrupt signal process could not be started.");
-        await signalProcess.WaitForExitAsync(CancellationToken.None);
-
-        var error = await signalProcess.StandardError.ReadToEndAsync();
-        Assert.True(signalProcess.ExitCode == 0, $"Could not send interrupt signal: {error}");
-    }
-
-    private static string ShellQuote(string value)
-    {
-        return $"'{value.Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
     }
 
     private static string FindCliAssemblyPath()

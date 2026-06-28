@@ -1,19 +1,21 @@
-using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.ProjectContexts;
-using AgentPulse.Application.SessionRuns;
 using AgentPulse.Cli.Console;
 using AgentPulse.Cli.Credentials;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace AgentPulse.Cli.Commands;
 
 public sealed class RunCommandHandler(
     IServiceScopeFactory scopeFactory,
+    IProjectContextFactory projectContextFactory,
     IProviderCredentialResolver credentialResolver,
-    IConsole console) : IRunCommandHandler
+    ICliErrorRenderer errorRenderer,
+    IConsole console,
+    ILogger<RunCommandHandler> logger) : IRunCommandHandler
 {
     public async Task<int> HandleAsync(
         RunCommandOptions options,
@@ -22,8 +24,18 @@ public sealed class RunCommandHandler(
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(options.Prompt);
 
+        logger.LogDebug(
+            "Run input accepted. PromptLength {PromptLength}; HasSession {HasSession}; HasModelOverride {HasModelOverride}.",
+            options.Prompt.Length,
+            options.SessionId is not null,
+            options.ModelOverride is not null);
+
         try
         {
+            var projectContext = await projectContextFactory.CreateForRunAsync(
+                options.ProjectDirectory,
+                cancellationToken);
+
             using var scope = scopeFactory.CreateScope();
             var services = scope.ServiceProvider;
 
@@ -44,79 +56,37 @@ public sealed class RunCommandHandler(
                         options.Prompt,
                         options.ProjectDirectory,
                         options.SessionId,
-                        options.ModelOverride),
+                        options.ModelOverride,
+                        projectContext),
                     cancellationToken);
 
             await WriteSessionIdAsync(result.SessionId, cancellationToken);
+            logger.LogInformation(
+                "Run completed. SessionId {SessionId}; UserMessageId {UserMessageId}; AssistantMessageId {AssistantMessageId}.",
+                result.SessionId,
+                result.UserMessageId,
+                result.AssistantMessageId);
             return ExitCodes.Success;
         }
         catch (SecretInputCancelledException)
         {
-            await WriteCancelledAsync();
-            return ExitCodes.Cancelled;
+            return await RenderCancellationAsync();
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            await WriteCancelledAsync();
-            return ExitCodes.Cancelled;
+            return await RenderCancellationAsync();
         }
-        catch (CredentialResolutionException exception)
+        catch (Exception exception)
         {
-            await WriteErrorAsync(exception.Message, cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (ProviderCredentialStoreException exception)
-        {
-            await WriteErrorAsync(exception.Message, cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (ProjectContextException exception)
-        {
-            await WriteErrorAsync(exception.Message, cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (SessionRunException exception)
-        {
-            await WriteErrorAsync(MapSessionError(exception), cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (ChatModelRequestException)
-        {
-            await WriteErrorAsync(
-                "The model request could not be built from the stored session history.",
-                cancellationToken);
-            return ExitCodes.Failure;
-        }
-        catch (ModelRunException exception)
-        {
-            await WriteErrorAsync(exception.Message, cancellationToken);
-            return exception.Code == ModelRunErrorCode.ProviderCancelled
-                ? ExitCodes.Cancelled
-                : ExitCodes.Failure;
-        }
-        catch (Exception)
-        {
-            await WriteErrorAsync(
-                "The run failed before the model response completed.",
-                cancellationToken);
-            return ExitCodes.Failure;
+            return await errorRenderer.RenderAsync(exception, cancellationToken);
         }
     }
 
-    private static string MapSessionError(SessionRunException exception)
+
+    private async Task<int> RenderCancellationAsync()
     {
-        return exception.Code switch
-        {
-            SessionRunErrorCode.SessionNotFound =>
-                "The requested session does not exist or is no longer available.",
-            SessionRunErrorCode.SessionProjectMismatch =>
-                "The requested session belongs to a different project.",
-            SessionRunErrorCode.SessionAlreadyRunning =>
-                "The requested session already has an active run.",
-            SessionRunErrorCode.InvalidUserPrompt =>
-                "The prompt cannot be empty.",
-            _ => "The session run state could not be updated safely.",
-        };
+        using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        return await errorRenderer.RenderCancellationAsync(cleanup.Token);
     }
 
     private async Task WriteSessionIdAsync(
@@ -126,22 +96,6 @@ public sealed class RunCommandHandler(
         await console.Error.WriteLineAsync(
             $"Session ID: {sessionId}".AsMemory(),
             cancellationToken);
-        await console.Error.FlushAsync(cancellationToken);
-    }
-
-    private async Task WriteCancelledAsync()
-    {
-        await console.Error.WriteLineAsync(
-            "Operation cancelled.".AsMemory(),
-            CancellationToken.None);
-        await console.Error.FlushAsync(CancellationToken.None);
-    }
-
-    private async Task WriteErrorAsync(
-        string message,
-        CancellationToken cancellationToken)
-    {
-        await console.Error.WriteLineAsync(message.AsMemory(), cancellationToken);
         await console.Error.FlushAsync(cancellationToken);
     }
 }
