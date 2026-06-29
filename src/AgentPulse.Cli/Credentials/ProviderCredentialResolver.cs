@@ -7,7 +7,7 @@ namespace AgentPulse.Cli.Credentials;
 public sealed class ProviderCredentialResolver : IProviderCredentialResolver
 {
     public const string EnvironmentVariableName =
-        OpenAiCompatibleModelOptions.XiaomiDefaultApiKeyEnvironmentVariable;
+        OpenAiCompatibleModelOptions.DefaultApiKeyEnvironmentVariable;
 
     private readonly IEnvironmentVariableReader _environmentVariables;
     private readonly IProviderCredentialStore _credentialStore;
@@ -94,7 +94,7 @@ public sealed class ProviderCredentialResolver : IProviderCredentialResolver
             return;
         }
 
-        if (_scope.IsOfficialXiaomi)
+        if (_scope.IsDefaultEndpoint)
         {
             var legacyCredential = ValidateOptional(
                 await _legacyCredentialStore.GetLegacyAsync(cancellationToken));

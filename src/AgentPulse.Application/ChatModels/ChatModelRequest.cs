@@ -4,12 +4,11 @@ public sealed class ChatModelRequest
 {
     public ChatModelRequest(
         IEnumerable<ChatModelMessage> messages,
-        string? model = null)
+        string? model = null,
+        IEnumerable<ChatModelToolDefinition>? tools = null)
     {
         ArgumentNullException.ThrowIfNull(messages);
-
         var copiedMessages = messages.ToArray();
-
         if (copiedMessages.Length == 0)
         {
             throw new ArgumentException(
@@ -31,6 +30,12 @@ public sealed class ChatModelRequest
                 nameof(messages));
         }
 
+        var copiedTools = (tools ?? []).ToArray();
+        if (copiedTools.Select(static tool => tool.Name).Distinct(StringComparer.Ordinal).Count() != copiedTools.Length)
+        {
+            throw new ArgumentException("Tool definition names must be unique.", nameof(tools));
+        }
+
         if (model is not null)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(model);
@@ -38,9 +43,12 @@ public sealed class ChatModelRequest
         }
 
         Messages = Array.AsReadOnly(copiedMessages);
+        Tools = Array.AsReadOnly(copiedTools);
     }
 
     public IReadOnlyList<ChatModelMessage> Messages { get; }
+
+    public IReadOnlyList<ChatModelToolDefinition> Tools { get; }
 
     public string? Model { get; }
 }

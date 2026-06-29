@@ -143,7 +143,7 @@ public sealed class RunPromptVerticalFlowEndToEndTests
             request.Messages.Skip(1).Select(message => message.Content));
         Assert.DoesNotContain(
             request.Messages,
-            message => message.Content.Contains("other", StringComparison.Ordinal));
+            message => message.Content?.Contains("other", StringComparison.Ordinal) == true);
     }
 
     [Fact]

@@ -42,7 +42,7 @@ public sealed class ProviderCredentialStoreTests
             new ProviderCredentialStoreOptions(directory.Path));
 
         var exception = await Assert.ThrowsAsync<ProviderCredentialValidationException>(() =>
-            store.SaveAsync(ProviderCredentialScope.XiaomiDefault, unsafeCredential));
+            store.SaveAsync(ProviderCredentialScope.Default, unsafeCredential));
 
         Assert.Equal("The configured API credential contains invalid characters.", exception.Message);
         if (!string.IsNullOrWhiteSpace(unsafeCredential))
@@ -60,9 +60,9 @@ public sealed class ProviderCredentialStoreTests
         var store = new DataProtectionProviderCredentialStore(
             new ProviderCredentialStoreOptions(directory.Path));
 
-        await store.SaveAsync(ProviderCredentialScope.XiaomiDefault, "  valid key  ");
+        await store.SaveAsync(ProviderCredentialScope.Default, "  valid key  ");
 
-        Assert.Equal("valid key", await store.GetAsync(ProviderCredentialScope.XiaomiDefault));
+        Assert.Equal("valid key", await store.GetAsync(ProviderCredentialScope.Default));
     }
 
     [Fact]
@@ -72,7 +72,7 @@ public sealed class ProviderCredentialStoreTests
         var store = new DataProtectionProviderCredentialStore(
             new ProviderCredentialStoreOptions(directory.Path));
         const string secret = "test-secret-value";
-        var scope = ProviderCredentialScope.XiaomiDefault;
+        var scope = ProviderCredentialScope.Default;
 
         await store.SaveAsync(scope, secret);
 
@@ -91,7 +91,7 @@ public sealed class ProviderCredentialStoreTests
         await using var directory = new TemporaryDirectory();
         var store = new DataProtectionProviderCredentialStore(
             new ProviderCredentialStoreOptions(directory.Path));
-        var scope = ProviderCredentialScope.XiaomiDefault;
+        var scope = ProviderCredentialScope.Default;
 
         await store.SaveAsync(scope, "first");
         await store.SaveAsync(scope, "second");
@@ -113,7 +113,7 @@ public sealed class ProviderCredentialStoreTests
             new ProviderCredentialStoreOptions(directory.Path));
         await store.SaveLegacyAsync("safe-secret");
         await File.WriteAllTextAsync(
-            Path.Combine(directory.Path, "xiaomi-mimo.credential"),
+            Path.Combine(directory.Path, "legacy-provider.credential"),
             "corrupt");
 
         var exception = await Assert.ThrowsAsync<ProviderCredentialStoreException>(
@@ -134,7 +134,7 @@ public sealed class ProviderCredentialStoreTests
         await using var directory = new TemporaryDirectory();
         var store = new DataProtectionProviderCredentialStore(
             new ProviderCredentialStoreOptions(directory.Path));
-        await store.SaveAsync(ProviderCredentialScope.XiaomiDefault, "secret");
+        await store.SaveAsync(ProviderCredentialScope.Default, "secret");
 
         var directoryMode = File.GetUnixFileMode(directory.Path);
         var credentialPath = Directory
@@ -304,7 +304,7 @@ public sealed class ProviderCredentialStoreTests
         return new ProviderCredentialSession(
             store,
             store,
-            ProviderCredentialScope.XiaomiDefault);
+            ProviderCredentialScope.Default);
     }
 
     private static bool ContainsSequence(byte[] haystack, byte[] needle)

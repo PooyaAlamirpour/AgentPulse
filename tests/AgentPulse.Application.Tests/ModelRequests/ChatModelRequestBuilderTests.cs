@@ -554,6 +554,344 @@ public sealed class ChatModelRequestBuilderTests
             mutableView.RemoveAt(0));
     }
 
+    [Fact]
+    public void Completed_tool_call_history_is_reconstructed_with_stable_identifiers()
+    {
+        var firstUser = CreateMessage(
+            SessionId,
+            MessageRole.User,
+            1,
+            MessageStatus.Completed,
+            "inspect the readme");
+        var assistant = new Message(
+            MessageId.New(),
+            SessionId,
+            MessageRole.Assistant,
+            2,
+            UtcDate);
+        assistant.AddTextPart(MessagePartId.New(), 1, string.Empty, UtcDate);
+        assistant.AddToolCallPart(
+            MessagePartId.New(),
+            2,
+            "call-1",
+            "read",
+            "{\"path\":\"README.md\"}",
+            UtcDate);
+        assistant.StartStreaming("test-model", UtcDate);
+        assistant.Complete("ToolCalls", 4, 1, 5, UtcDate);
+
+        var tool = new Message(
+            MessageId.New(),
+            SessionId,
+            MessageRole.Tool,
+            3,
+            UtcDate);
+        tool.AddToolResultPart(
+            MessagePartId.New(),
+            SessionId,
+            assistant.Id,
+            1,
+            "call-1",
+            "read",
+            true,
+            "1: # AgentPulse",
+            null,
+            "{\"path\":\"README.md\"}",
+            UtcDate);
+        tool.Complete(UtcDate);
+
+        var currentUser = CreateMessage(
+            SessionId,
+            MessageRole.User,
+            4,
+            MessageStatus.Completed,
+            "continue");
+
+        var request = Build([firstUser, assistant, tool], currentUser);
+
+        Assert.Equal(5, request.Messages.Count);
+        var assistantRequest = request.Messages[2];
+        Assert.Equal(ChatModelRole.Assistant, assistantRequest.Role);
+        var call = Assert.Single(assistantRequest.ToolCalls);
+        Assert.Equal("call-1", call.Id);
+        Assert.Equal("read", call.Name);
+        Assert.Equal("{\"path\":\"README.md\"}", call.ArgumentsJson);
+
+        var toolRequest = request.Messages[3];
+        Assert.Equal(ChatModelRole.Tool, toolRequest.Role);
+        Assert.Equal("call-1", toolRequest.ToolCallId);
+        Assert.Equal("read", toolRequest.ToolName);
+        Assert.Contains("1: # AgentPulse", toolRequest.Content, StringComparison.Ordinal);
+    }
+
+
+    [Fact]
+    public void Complete_multi_call_turn_is_preserved()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"), ("call-2", "grep"));
+        var firstResult = CreateToolResultMessage(3, assistant, "call-2", "grep");
+        var secondResult = CreateToolResultMessage(4, assistant, "call-1", "read");
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 5, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, firstResult, secondResult], currentUser);
+
+        Assert.Equal(6, request.Messages.Count);
+        Assert.Equal(2, request.Messages[2].ToolCalls.Count);
+        Assert.Equal(2, request.Messages.Count(static message => message.Role == ChatModelRole.Tool));
+    }
+
+    [Theory]
+    [InlineData(MessageStatus.Pending)]
+    [InlineData(MessageStatus.Streaming)]
+    [InlineData(MessageStatus.Failed)]
+    [InlineData(MessageStatus.Cancelled)]
+    public void Non_completed_tool_result_makes_the_entire_turn_incomplete(MessageStatus status)
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"));
+        var result = CreateToolResultMessage(3, assistant.Id, "call-1", "read", status);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 4, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, result], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Mixed_completed_and_non_completed_results_filter_the_entire_turn()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"), ("call-2", "grep"));
+        var completed = CreateToolResultMessage(3, assistant, "call-1", "read");
+        var pending = CreateToolResultMessage(
+            4,
+            assistant.Id,
+            "call-2",
+            "grep",
+            MessageStatus.Pending);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 5, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, completed, pending], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Tool_result_with_missing_assistant_is_filtered_as_orphan()
+    {
+        var orphan = CreateToolResultMessage(
+            2,
+            MessageId.New(),
+            "call-1",
+            "read",
+            MessageStatus.Completed);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 3, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            orphan], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Tool_result_for_assistant_text_message_is_filtered_as_orphan()
+    {
+        var assistantText = CreateMessage(
+            SessionId,
+            MessageRole.Assistant,
+            2,
+            MessageStatus.Completed,
+            "normal answer");
+        var orphan = CreateToolResultMessage(
+            3,
+            assistantText.Id,
+            "call-1",
+            "read",
+            MessageStatus.Completed);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 4, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistantText, orphan], currentUser);
+
+        Assert.Contains(request.Messages, static message => message.Content == "normal answer");
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Tool_result_with_unknown_call_id_does_not_complete_the_turn()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"));
+        var orphan = CreateToolResultMessage(
+            3,
+            assistant.Id,
+            "missing-call",
+            "read",
+            MessageStatus.Completed);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 4, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, orphan], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Tool_name_mismatch_does_not_complete_the_turn()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"));
+        var mismatched = CreateToolResultMessage(
+            3,
+            assistant.Id,
+            "call-1",
+            "grep",
+            MessageStatus.Completed);
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 4, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, mismatched], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Tool_result_part_from_another_session_does_not_complete_the_turn()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"));
+        var wrongSessionResult = CreateToolResultMessage(
+            3,
+            assistant.Id,
+            "call-1",
+            "read",
+            MessageStatus.Completed,
+            SessionId.New());
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 4, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, wrongSessionResult], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+    }
+
+    [Fact]
+    public void Incomplete_multi_call_turn_and_partial_results_are_filtered()
+    {
+        var assistant = CreateToolCallMessage(2, ("call-1", "read"), ("call-2", "grep"));
+        var partialResult = CreateToolResultMessage(3, assistant, "call-1", "read");
+        var finalAssistant = CreateMessage(SessionId, MessageRole.Assistant, 4, MessageStatus.Completed, "safe final");
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 5, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            assistant, partialResult, finalAssistant], currentUser);
+
+        Assert.DoesNotContain(request.Messages, static message => message.ToolCalls.Count > 0);
+        Assert.DoesNotContain(request.Messages, static message => message.Role == ChatModelRole.Tool);
+        Assert.Contains(request.Messages, static message => message.Content == "safe final");
+    }
+
+    [Fact]
+    public void Complete_turn_before_incomplete_turn_is_preserved()
+    {
+        var completeAssistant = CreateToolCallMessage(2, ("call-a", "read"));
+        var completeResult = CreateToolResultMessage(3, completeAssistant, "call-a", "read");
+        var finalAssistant = CreateMessage(SessionId, MessageRole.Assistant, 4, MessageStatus.Completed, "done");
+        var nextUser = CreateMessage(SessionId, MessageRole.User, 5, MessageStatus.Completed, "next");
+        var incompleteAssistant = CreateToolCallMessage(6, ("call-b1", "read"), ("call-b2", "grep"));
+        var partial = CreateToolResultMessage(7, incompleteAssistant, "call-b1", "read");
+        var currentUser = CreateMessage(SessionId, MessageRole.User, 8, MessageStatus.Completed, "continue");
+
+        var request = Build([
+            CreateMessage(SessionId, MessageRole.User, 1, MessageStatus.Completed, "start"),
+            completeAssistant, completeResult, finalAssistant, nextUser, incompleteAssistant, partial], currentUser);
+
+        Assert.Contains(request.Messages, message => message.ToolCalls.Any(call => call.Id == "call-a"));
+        Assert.Contains(request.Messages, message => message.ToolCallId == "call-a");
+        Assert.DoesNotContain(request.Messages, message => message.ToolCalls.Any(call => call.Id == "call-b1"));
+        Assert.DoesNotContain(request.Messages, message => message.ToolCallId == "call-b1");
+        Assert.Contains(request.Messages, static message => message.Content == "done");
+    }
+
+    private static Message CreateToolCallMessage(
+        long sequence,
+        params (string Id, string Name)[] calls)
+    {
+        var assistant = new Message(MessageId.New(), SessionId, MessageRole.Assistant, sequence, UtcDate);
+        assistant.AddTextPart(MessagePartId.New(), 1, string.Empty, UtcDate);
+        for (var index = 0; index < calls.Length; index++)
+        {
+            assistant.AddToolCallPart(
+                MessagePartId.New(), index + 2, calls[index].Id, calls[index].Name, "{}", UtcDate);
+        }
+
+        assistant.StartStreaming("test-model", UtcDate);
+        assistant.Complete("ToolCalls", null, null, null, UtcDate);
+        return assistant;
+    }
+
+    private static Message CreateToolResultMessage(
+        long sequence,
+        Message assistant,
+        string callId,
+        string toolName)
+    {
+        return CreateToolResultMessage(
+            sequence,
+            assistant.Id,
+            callId,
+            toolName,
+            MessageStatus.Completed);
+    }
+
+    private static Message CreateToolResultMessage(
+        long sequence,
+        MessageId assistantMessageId,
+        string callId,
+        string toolName,
+        MessageStatus status,
+        SessionId? resultSessionId = null)
+    {
+        var tool = new Message(MessageId.New(), SessionId, MessageRole.Tool, sequence, UtcDate);
+        tool.AddToolResultPart(
+            MessagePartId.New(), resultSessionId ?? SessionId, assistantMessageId, 1, callId, toolName,
+            true, "ok", null, null, UtcDate);
+
+        switch (status)
+        {
+            case MessageStatus.Pending:
+                break;
+            case MessageStatus.Streaming:
+                tool.StartStreaming(UtcDate);
+                break;
+            case MessageStatus.Completed:
+                tool.Complete(UtcDate);
+                break;
+            case MessageStatus.Failed:
+                tool.Fail("test failure", UtcDate);
+                break;
+            case MessageStatus.Cancelled:
+                tool.Cancel(UtcDate);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(status), status, null);
+        }
+
+        return tool;
+    }
+
     private ChatModelRequest Build(
         IReadOnlyCollection<Message> history,
         Message currentUser,

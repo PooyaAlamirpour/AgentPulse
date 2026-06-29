@@ -25,29 +25,32 @@ public sealed class OpenAiCompatibleModelOptions
     };
 
     public const string SectionName = "AgentPulse:Model";
+    public const string DefaultBaseUrl = "https://api.openai.com/v1";
+    public const string DefaultModel = "gpt-4.1-mini";
+    public const string DefaultApiKeyEnvironmentVariable = "OPENAI_API_KEY";
     public const string XiaomiDefaultBaseUrl = "https://api.xiaomimimo.com/v1";
     public const string XiaomiDefaultModel = "mimo-v2.5-pro";
     public const string XiaomiDefaultApiKeyEnvironmentVariable = "MIMO_API_KEY";
 
-    public string BaseUrl { get; set; } = XiaomiDefaultBaseUrl;
+    public string BaseUrl { get; set; } = DefaultBaseUrl;
 
     public string ChatCompletionsPath { get; set; } = "chat/completions";
 
-    public string Model { get; set; } = XiaomiDefaultModel;
+    public string Model { get; set; } = DefaultModel;
 
     public OpenAiCompatibleAuthenticationMode AuthenticationMode { get; set; } =
-        OpenAiCompatibleAuthenticationMode.ApiKeyHeader;
+        OpenAiCompatibleAuthenticationMode.Bearer;
 
     public string ApiKeyHeaderName { get; set; } = "api-key";
 
     public string ApiKeyEnvironmentVariable { get; set; } =
-        XiaomiDefaultApiKeyEnvironmentVariable;
+        DefaultApiKeyEnvironmentVariable;
 
     public int MaxCompletionTokens { get; set; } = 4096;
 
     public string ThinkingMode { get; set; } = "disabled";
 
-    public bool IncludeThinkingConfiguration { get; set; } = true;
+    public bool IncludeThinkingConfiguration { get; set; }
 
     public TimeSpan FirstByteTimeout { get; set; } = TimeSpan.FromSeconds(30);
 

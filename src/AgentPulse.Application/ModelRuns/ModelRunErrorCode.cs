@@ -10,4 +10,6 @@ public enum ModelRunErrorCode
     ValidationFailure = 6,
     OutputFailure = 7,
     UnexpectedFailure = 8,
+    MaxToolIterationsReached = 9,
+    InvalidAgentResponse = 10,
 }

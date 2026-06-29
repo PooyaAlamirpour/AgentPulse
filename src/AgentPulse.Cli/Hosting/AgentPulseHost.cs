@@ -1,3 +1,5 @@
+using AgentPulse.Application.AgentLoop;
+using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.ModelRuns;
@@ -95,6 +97,10 @@ public static class AgentPulseHost
         var streamingRunOptions = new StreamingRunOptions();
         builder.Configuration.GetSection(StreamingRunOptions.SectionName).Bind(streamingRunOptions);
 
+        var agentToolOptions = new AgentToolOptions();
+        builder.Configuration.GetSection(AgentToolOptions.SectionName).Bind(agentToolOptions);
+        agentToolOptions.Validate();
+
         RunLeaseOptionsValidator.Validate(sessionRunOptions, streamingRunOptions);
 
         var modelOptions = new OpenAiCompatibleModelOptions();
@@ -110,6 +116,7 @@ public static class AgentPulseHost
 
         builder.Services.AddSingleton(sessionRunOptions);
         builder.Services.AddSingleton(streamingRunOptions);
+        builder.Services.AddSingleton(agentToolOptions);
         builder.Services.AddSingleton(modelOptions);
         builder.Services.AddSingleton(new ChatModelRunDefaults(modelOptions.Model));
         builder.Services.AddSingleton(credentialScope);
@@ -138,6 +145,7 @@ public static class AgentPulseHost
         builder.Services.AddAgentPulsePersistence(databasePath);
         builder.Services.AddAgentPulseCredentialStore();
         builder.Services.AddOpenAiCompatibleModelProvider();
+        builder.Services.AddAgentTools();
 
         builder.Services.AddScoped<IRegisterProject, RegisterProject>();
         builder.Services.AddScoped<ICreateSession, CreateSession>();
@@ -147,7 +155,9 @@ public static class AgentPulseHost
         builder.Services.AddScoped<IRenewSessionRunLease, RenewSessionRunLease>();
         builder.Services.AddSingleton<IChatModelHistoryPolicy, ChatModelHistoryPolicy>();
         builder.Services.AddSingleton<IChatModelRequestBuilder, ChatModelRequestBuilder>();
-        builder.Services.AddScoped<IRunPrompt, RunPrompt>();
+        builder.Services.AddScoped<IAgentLoop, AgentLoop>();
+        builder.Services.AddScoped<RunPrompt>();
+        builder.Services.AddScoped<IRunPrompt, ToolCallingRunPrompt>();
 
         builder.Services.AddSingleton<IConsole>(console ?? new SystemConsole());
         builder.Services.AddSingleton<IModelOutputSink, ConsoleModelOutputSink>();

@@ -13,7 +13,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
     private const string UserPrompt = "Private user history that must not leak";
 
     [Fact]
-    public async Task Xiaomi_profile_uses_api_key_header_and_includes_thinking_configuration()
+    public async Task Default_profile_uses_bearer_authentication_and_omits_thinking_configuration()
     {
         await using var server = SuccessfulServer();
         var credential = new RecordingCredentialSession(Secret);
@@ -24,16 +24,16 @@ public sealed class OpenAiCompatibleChatModelClientTests
         var request = await server.Request;
 
         Assert.Equal("POST /v1/chat/completions HTTP/1.1", request.RequestLine);
-        Assert.Equal(Secret, request.Headers["api-key"]);
-        Assert.False(request.Headers.ContainsKey("Authorization"));
+        Assert.Equal($"Bearer {Secret}", request.Headers["Authorization"]);
+        Assert.False(request.Headers.ContainsKey("api-key"));
         Assert.DoesNotContain(Secret, request.Body, StringComparison.Ordinal);
         using var document = JsonDocument.Parse(request.Body);
         var root = document.RootElement;
-        Assert.Equal("mimo-v2.5-pro", root.GetProperty("model").GetString());
+        Assert.Equal("gpt-4.1-mini", root.GetProperty("model").GetString());
         Assert.True(root.GetProperty("stream").GetBoolean());
         Assert.True(root.GetProperty("stream_options").GetProperty("include_usage").GetBoolean());
         Assert.Equal(4096, root.GetProperty("max_completion_tokens").GetInt32());
-        Assert.Equal("disabled", root.GetProperty("thinking").GetProperty("type").GetString());
+        Assert.False(root.TryGetProperty("thinking", out _));
         Assert.False(root.TryGetProperty("tools", out _));
         Assert.False(root.TryGetProperty("functions", out _));
         Assert.Equal(["Hel", "lo"], TextDeltas(events));
@@ -97,6 +97,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
     {
         await using var server = SuccessfulServer();
         var options = CreateOptions(server.BaseUri);
+        options.AuthenticationMode = OpenAiCompatibleAuthenticationMode.ApiKeyHeader;
         options.ApiKeyHeaderName = "x-provider-key";
         var client = CreateClient(options, new RecordingCredentialSession(Secret));
 
@@ -119,7 +120,7 @@ public sealed class OpenAiCompatibleChatModelClientTests
         await ReadAllAsync(client);
         var request = await server.Request;
 
-        Assert.Equal(Secret, request.Headers["api-key"]);
+        Assert.Equal($"Bearer {Secret}", request.Headers["Authorization"]);
     }
 
     [Theory]
@@ -823,6 +824,98 @@ public sealed class OpenAiCompatibleChatModelClientTests
         Assert.Equal(["Hel"], deltas);
         Assert.Equal(ModelProviderErrorCode.Cancelled, exception.Code);
         Assert.Equal(ModelFailureStage.AfterFirstToken, exception.FailureStage);
+    }
+
+    [Fact]
+    public async Task Complete_async_sends_tool_definitions_and_parses_tool_calls()
+    {
+        const string responseBody =
+            """
+            {"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"read","arguments":"{\"path\":\"README.md\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}
+            """;
+        await using var server = new LocalModelServer((stream, request, cancellationToken) =>
+            LocalModelServer.WriteResponseAsync(
+                stream,
+                200,
+                "OK",
+                responseBody,
+                new Dictionary<string, string> { ["Content-Type"] = "application/json" },
+                cancellationToken));
+        var credential = new RecordingCredentialSession(Secret);
+        var client = CreateClient(CreateOptions(server.BaseUri), credential);
+        var requestModel = new ChatModelRequest(
+        [
+            new ChatModelMessage(ChatModelRole.System, SystemPrompt),
+            new ChatModelMessage(ChatModelRole.User, UserPrompt),
+        ],
+        tools:
+        [
+            new ChatModelToolDefinition(
+                "read",
+                "Read a file.",
+                "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}},\"required\":[\"path\"]}"),
+        ]);
+
+        var response = await client.CompleteAsync(requestModel, CancellationToken.None);
+        var captured = await server.Request;
+
+        using var document = JsonDocument.Parse(captured.Body);
+        var root = document.RootElement;
+        Assert.False(root.GetProperty("stream").GetBoolean());
+        Assert.False(root.TryGetProperty("stream_options", out _));
+        Assert.Equal("auto", root.GetProperty("tool_choice").GetString());
+        var function = root.GetProperty("tools")[0].GetProperty("function");
+        Assert.Equal("read", function.GetProperty("name").GetString());
+        Assert.Equal("object", function.GetProperty("parameters").GetProperty("type").GetString());
+
+        var call = Assert.Single(response.ToolCalls);
+        Assert.Equal("call-1", call.Id);
+        Assert.Equal("read", call.Name);
+        Assert.Equal("{\"path\":\"README.md\"}", call.ArgumentsJson);
+        Assert.Equal(ModelFinishReason.ToolCalls, response.FinishReason);
+        Assert.Equal(new ModelUsage(10, 4, 14), response.Usage);
+        Assert.Equal(1, credential.AcceptedCalls);
+    }
+
+    [Fact]
+    public async Task Complete_async_maps_tool_result_messages()
+    {
+        const string responseBody =
+            """
+            {"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}
+            """;
+        await using var server = new LocalModelServer((stream, request, cancellationToken) =>
+            LocalModelServer.WriteResponseAsync(
+                stream,
+                200,
+                "OK",
+                responseBody,
+                new Dictionary<string, string> { ["Content-Type"] = "application/json" },
+                cancellationToken));
+        var client = CreateClient(
+            CreateOptions(server.BaseUri),
+            new RecordingCredentialSession(Secret));
+        var requestModel = new ChatModelRequest(
+        [
+            new ChatModelMessage(ChatModelRole.System, SystemPrompt),
+            ChatModelMessage.CreateAssistantToolCalls(
+                null,
+                [new ChatModelToolCall("call-1", "read", "{\"path\":\"README.md\"}", 1)]),
+            ChatModelMessage.CreateToolResult("call-1", "read", "{\"success\":true,\"output\":\"ok\"}"),
+        ]);
+
+        var response = await client.CompleteAsync(requestModel, CancellationToken.None);
+        var captured = await server.Request;
+
+        using var document = JsonDocument.Parse(captured.Body);
+        var messages = document.RootElement.GetProperty("messages");
+        Assert.Equal("assistant", messages[1].GetProperty("role").GetString());
+        Assert.Equal("call-1", messages[1].GetProperty("tool_calls")[0].GetProperty("id").GetString());
+        Assert.Equal("tool", messages[2].GetProperty("role").GetString());
+        Assert.Equal("call-1", messages[2].GetProperty("tool_call_id").GetString());
+        Assert.Equal("read", messages[2].GetProperty("name").GetString());
+        Assert.Equal("done", response.Text);
+        Assert.Empty(response.ToolCalls);
     }
 
     private static LocalModelServer SuccessfulServer()

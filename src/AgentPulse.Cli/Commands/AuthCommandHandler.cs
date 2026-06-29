@@ -164,7 +164,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
                 _scope,
                 cancellationToken);
             var legacyCredentialExists = !scopedCredentialExists &&
-                                         _scope.IsOfficialXiaomi &&
+                                         _scope.IsDefaultEndpoint &&
                                          await _legacyCredentialStore.LegacyExistsAsync(
                                              cancellationToken);
             message = scopedCredentialExists || legacyCredentialExists
@@ -180,7 +180,7 @@ public sealed class AuthCommandHandler : IAuthCommandHandler
     private async Task<int> ClearAsync(CancellationToken cancellationToken)
     {
         await _credentialStore.DeleteAsync(_scope, cancellationToken);
-        if (_scope.IsOfficialXiaomi)
+        if (_scope.IsDefaultEndpoint)
         {
             await _legacyCredentialStore.DeleteLegacyAsync(cancellationToken);
         }

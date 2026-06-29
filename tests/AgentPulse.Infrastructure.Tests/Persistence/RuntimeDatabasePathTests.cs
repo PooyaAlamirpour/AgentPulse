@@ -50,6 +50,7 @@ public sealed class RuntimeDatabasePathTests
             Assert.Contains("20260627120000_InitialDomainPersistence", appliedMigrations);
             Assert.Contains("20260627150000_AddSessionRunLifecycle", appliedMigrations);
             Assert.Contains("20260627200000_AddRunMessageMetadata", appliedMigrations);
+            Assert.Contains("20260628180000_AddToolCallingMessages", appliedMigrations);
 
             var connectionString = context.Database.GetConnectionString();
             Assert.NotNull(connectionString);

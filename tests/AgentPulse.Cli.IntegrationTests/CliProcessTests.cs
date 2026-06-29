@@ -34,18 +34,18 @@ public sealed partial class CliProcessTests
             result.StandardOutput,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "Xiaomi MiMo " + "response",
+            "OpenAI-compatible " + "response",
             result.StandardOutput,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "Xiaomi MiMo API " + "credential",
+            "OpenAI-compatible API " + "credential",
             result.StandardOutput,
             StringComparison.Ordinal);
         Assert.DoesNotContain(
-            "without changing " + "MIMO_API_KEY",
+            "without changing " + "OPENAI_API_KEY",
             result.StandardOutput,
             StringComparison.Ordinal);
-        Assert.DoesNotContain("MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("OPENAI_API_KEY", result.StandardError, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -61,8 +61,8 @@ public sealed partial class CliProcessTests
         {
             await using var server = CliLocalModelServer.StartSuccessful();
             var environment = CreateRunEnvironment(server.BaseUrl, root);
-            environment["AgentPulse__Model__ApiKeyEnvironmentVariable"] = "MIMO_API_KEY";
-            environment["MIMO_API_KEY"] = null;
+            environment["AgentPulse__Model__ApiKeyEnvironmentVariable"] = "OPENAI_API_KEY";
+            environment["OPENAI_API_KEY"] = null;
             environment["HOME"] = Path.Combine(root, "home");
             environment["USERPROFILE"] = Path.Combine(root, "profile");
             environment["LOCALAPPDATA"] = Path.Combine(root, "local-app-data");
@@ -75,7 +75,7 @@ public sealed partial class CliProcessTests
 
             Assert.Equal(ExitCodes.Configuration, result.ExitCode);
             Assert.Equal(string.Empty, result.StandardOutput);
-            Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("Set OPENAI_API_KEY", result.StandardError, StringComparison.Ordinal);
             Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
             Assert.Empty(server.RequestBodies);
         }
@@ -211,7 +211,7 @@ public sealed partial class CliProcessTests
                 "custom-model",
                 firstRequest.RootElement.GetProperty("model").GetString());
             Assert.Equal(
-                "mimo-v2.5-pro",
+                "gpt-4.1-mini",
                 secondRequest.RootElement.GetProperty("model").GetString());
             Assert.Equal(
                 "first positional",
@@ -303,7 +303,7 @@ public sealed partial class CliProcessTests
         {
             await using var server = CliLocalModelServer.StartHanging();
             var environment = CreateRunEnvironment(server.BaseUrl, root);
-            environment["MIMO_API_KEY"] = secretMarker;
+            environment["OPENAI_API_KEY"] = secretMarker;
             using var process = CliInterruptProcessHarness.Start(
                 FindCliAssemblyPath(),
                 ["run", "hello"],
@@ -368,7 +368,7 @@ public sealed partial class CliProcessTests
         Directory.CreateDirectory(root);
         return new Dictionary<string, string?>
         {
-            ["MIMO_API_KEY"] = "process-test-secret",
+            ["OPENAI_API_KEY"] = "process-test-secret",
             ["AgentPulse__Model__BaseUrl"] = baseUrl,
             ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
             ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "security"),

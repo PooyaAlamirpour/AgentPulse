@@ -139,4 +139,107 @@ public sealed class MessageTests
         Assert.Null(failed.FinishReason);
     }
 
+    [Fact]
+    public void Assistant_message_can_record_ordered_tool_calls()
+    {
+        var createdAtUtc = new DateTime(2026, 6, 28, 10, 0, 0, DateTimeKind.Utc);
+        var message = new Message(
+            MessageId.New(),
+            SessionId.New(),
+            MessageRole.Assistant,
+            1,
+            createdAtUtc);
+        message.AddTextPart(MessagePartId.New(), 1, string.Empty, createdAtUtc);
+
+        var part = message.AddToolCallPart(
+            MessagePartId.New(),
+            2,
+            "call-1",
+            "read",
+            "{\"path\":\"README.md\"}",
+            createdAtUtc);
+
+        Assert.Equal("call-1", part.ToolCallId);
+        Assert.Equal("read", part.ToolName);
+        Assert.Equal("{\"path\":\"README.md\"}", part.ArgumentsJson);
+        Assert.Equal(2, part.Order);
+    }
+
+    [Fact]
+    public void Tool_message_can_record_a_linked_success_or_failure_result()
+    {
+        var createdAtUtc = new DateTime(2026, 6, 28, 10, 0, 0, DateTimeKind.Utc);
+        var successSessionId = SessionId.New();
+        var successAssistantId = MessageId.New();
+        var success = new Message(
+            MessageId.New(),
+            successSessionId,
+            MessageRole.Tool,
+            1,
+            createdAtUtc);
+        var successPart = success.AddToolResultPart(
+            MessagePartId.New(),
+            successSessionId,
+            successAssistantId,
+            1,
+            "call-1",
+            "read",
+            true,
+            "content",
+            null,
+            "{\"truncated\":false}",
+            createdAtUtc);
+        success.Complete(createdAtUtc);
+
+        var failureSessionId = SessionId.New();
+        var failureAssistantId = MessageId.New();
+        var failure = new Message(
+            MessageId.New(),
+            failureSessionId,
+            MessageRole.Tool,
+            2,
+            createdAtUtc);
+        var failurePart = failure.AddToolResultPart(
+            MessagePartId.New(),
+            failureSessionId,
+            failureAssistantId,
+            1,
+            "call-2",
+            "grep",
+            false,
+            string.Empty,
+            "invalid pattern",
+            null,
+            createdAtUtc);
+
+        Assert.True(successPart.Succeeded);
+        Assert.Equal("call-1", successPart.ToolCallId);
+        Assert.Equal(MessageStatus.Completed, success.Status);
+        Assert.False(failurePart.Succeeded);
+        Assert.Equal("invalid pattern", failurePart.Error);
+    }
+
+    [Fact]
+    public void Tool_call_and_result_parts_are_restricted_to_their_roles()
+    {
+        var createdAtUtc = new DateTime(2026, 6, 28, 10, 0, 0, DateTimeKind.Utc);
+        var user = new Message(
+            MessageId.New(),
+            SessionId.New(),
+            MessageRole.User,
+            1,
+            createdAtUtc);
+        var assistant = new Message(
+            MessageId.New(),
+            SessionId.New(),
+            MessageRole.Assistant,
+            2,
+            createdAtUtc);
+
+        Assert.Throws<InvalidOperationException>(() => user.AddToolCallPart(
+            MessagePartId.New(), 1, "call", "read", "{}", createdAtUtc));
+        Assert.Throws<InvalidOperationException>(() => assistant.AddToolResultPart(
+            MessagePartId.New(), assistant.SessionId, assistant.Id, 1, "call", "read", true, "ok", null, null, createdAtUtc));
+    }
+
 }

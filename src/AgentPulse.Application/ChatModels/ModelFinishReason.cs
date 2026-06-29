@@ -7,4 +7,5 @@ public enum ModelFinishReason
     Cancelled = 2,
     Error = 3,
     Unknown = 4,
+    ToolCalls = 5,
 }

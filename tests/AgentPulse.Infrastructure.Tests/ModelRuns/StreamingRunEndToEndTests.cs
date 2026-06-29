@@ -10,7 +10,7 @@ using AgentPulse.Domain.Messages;
 using AgentPulse.Domain.Projects;
 using AgentPulse.Domain.Sessions;
 using AgentPulse.Infrastructure.Credentials;
-using AgentPulse.Infrastructure.ModelProviders.Xiaomi;
+using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
 using AgentPulse.Infrastructure.Tests.Persistence;
@@ -32,7 +32,7 @@ public sealed class StreamingRunEndToEndTests
         var requestState = new RequestState();
         await using var server = new LocalServer(async (stream, request, cancellationToken) =>
         {
-            requestState.ApiKeyHeader = request.Headers["api-key"];
+            requestState.AuthorizationHeader = request.Headers["Authorization"];
 
             await using (var verification = database.CreateContext())
             {
@@ -76,15 +76,19 @@ public sealed class StreamingRunEndToEndTests
             clock,
             new SessionRunOptions { LeaseDuration = TimeSpan.FromMinutes(5) });
         var credentialSession = new RecordingCredentialSession(secret);
-        var modelClient = new XiaomiChatModelClient(
+        var modelClient = new OpenAiCompatibleChatModelClient(
             new SingleHttpClientFactory(new HttpClient { Timeout = Timeout.InfiniteTimeSpan }),
-            new XiaomiModelOptions
+            new OpenAiCompatibleModelOptions
             {
                 BaseUrl = new Uri(server.BaseUri, "v1").ToString(),
+                Model = "test-model",
+                AuthenticationMode = OpenAiCompatibleAuthenticationMode.Bearer,
+                ApiKeyEnvironmentVariable = "TEST_API_KEY",
+                IncludeThinkingConfiguration = false,
                 FirstByteTimeout = TimeSpan.FromSeconds(2),
                 StreamIdleTimeout = TimeSpan.FromSeconds(2),
             },
-            new XiaomiSseParser(),
+            new OpenAiCompatibleSseParser(),
             credentialSession);
         var actualPersistence = new StreamingRunPersistence(dbContextFactory, clock);
         var persistence = new CountingPersistence(actualPersistence);
@@ -115,7 +119,7 @@ public sealed class StreamingRunEndToEndTests
             output,
             clock,
             new BlockingDelay(),
-            new ChatModelRunDefaults("mimo-v2.5-pro"),
+            new ChatModelRunDefaults("test-model"),
             new StreamingRunOptions
             {
                 FlushInterval = TimeSpan.FromHours(1),
@@ -128,7 +132,7 @@ public sealed class StreamingRunEndToEndTests
 
         Assert.True(requestState.UserWasCommitted);
         Assert.True(requestState.StreamingAssistantWasCommitted);
-        Assert.Equal(secret, requestState.ApiKeyHeader);
+        Assert.Equal($"Bearer {secret}", requestState.AuthorizationHeader);
         Assert.Equal(["Hel", "lo"], output.Deltas);
         Assert.Equal("Hello", result.Text);
         Assert.Equal(1, credentialSession.AcceptedCalls);
@@ -146,7 +150,7 @@ public sealed class StreamingRunEndToEndTests
             .SingleOrDefaultAsync(value => value.SessionId == result.SessionId);
 
         Assert.Equal(MessageStatus.Completed, assistant.Status);
-        Assert.Equal("mimo-v2.5-pro", assistant.Model);
+        Assert.Equal("test-model", assistant.Model);
         Assert.Equal(ModelFinishReason.Stop.ToString(), assistant.FinishReason);
         Assert.Equal("Hello", Assert.IsType<TextMessagePart>(Assert.Single(assistant.Parts)).Text);
         Assert.Equal(SessionStatus.Idle, session.Status);
@@ -174,7 +178,7 @@ public sealed class StreamingRunEndToEndTests
     {
         public bool UserWasCommitted { get; set; }
         public bool StreamingAssistantWasCommitted { get; set; }
-        public string? ApiKeyHeader { get; set; }
+        public string? AuthorizationHeader { get; set; }
         public TaskCompletionSource FirstFlushSent { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource AllowSecondFlush { get; } =

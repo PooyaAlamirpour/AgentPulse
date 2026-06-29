@@ -10,7 +10,7 @@ public sealed class DataProtectionProviderCredentialStore :
 {
     private const string LegacyPurpose = "AgentPulse.ProviderCredential.v1";
     private const string ScopedPurpose = "AgentPulse.ProviderCredential.v2";
-    private const string LegacyCredentialFileName = "xiaomi-mimo.credential";
+    private const string LegacyCredentialFileName = "legacy-provider.credential";
     private const string KeyRingDirectoryName = "keyring";
 
     private static readonly UnixFileMode DirectoryMode =
@@ -104,7 +104,7 @@ public sealed class DataProtectionProviderCredentialStore :
         return ReadCredentialAsync(
             _legacyCredentialPath,
             _legacyProtector,
-            "The legacy Xiaomi MiMo credential",
+            "The legacy provider credential",
             cancellationToken);
     }
 
@@ -112,7 +112,7 @@ public sealed class DataProtectionProviderCredentialStore :
     {
         return DeleteFileAsync(
             _legacyCredentialPath,
-            "The legacy Xiaomi MiMo credential",
+            "The legacy provider credential",
             cancellationToken);
     }
 
@@ -130,7 +130,7 @@ public sealed class DataProtectionProviderCredentialStore :
             _legacyCredentialPath,
             _legacyProtector,
             credential,
-            "The legacy Xiaomi MiMo credential",
+            "The legacy provider credential",
             cancellationToken);
     }
 

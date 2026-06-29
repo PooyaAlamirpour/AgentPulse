@@ -280,9 +280,8 @@ public sealed class ModelConfigurationTests
         var section = configuration.GetSection(OpenAiCompatibleModelOptions.SectionName);
 
         Assert.True(section.Exists());
-        Assert.Equal(OpenAiCompatibleModelOptions.XiaomiDefaultBaseUrl, section["BaseUrl"]);
+        Assert.Equal(OpenAiCompatibleModelOptions.DefaultBaseUrl, section["BaseUrl"]);
         Assert.Null(section["ApiKey"]);
-        Assert.Null(configuration["AgentPulse:Xiaomi:ApiKey"]);
         Assert.Equal("agentpulse", configuration[$"{CliOptions.SectionName}:ApplicationName"]);
     }
 

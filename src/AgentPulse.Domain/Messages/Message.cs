@@ -94,19 +94,67 @@ public sealed class Message
         string text,
         DateTime createdAtUtc)
     {
-        if (_parts.Any(part => part.Id == id))
-        {
-            throw new InvalidOperationException($"Message part '{id}' already exists.");
-        }
+        EnsurePartCanBeAdded(id, order);
+        var part = new TextMessagePart(id, Id, order, text, createdAtUtc);
+        _parts.Add(part);
+        return part;
+    }
 
-        var expectedOrder = _parts.Count + 1;
-        if (order != expectedOrder)
+    public ToolCallMessagePart AddToolCallPart(
+        MessagePartId id,
+        int order,
+        string toolCallId,
+        string toolName,
+        string argumentsJson,
+        DateTime createdAtUtc)
+    {
+        EnsureAssistant();
+        EnsurePartCanBeAdded(id, order);
+        var part = new ToolCallMessagePart(
+            id,
+            Id,
+            order,
+            toolCallId,
+            toolName,
+            argumentsJson,
+            createdAtUtc);
+        _parts.Add(part);
+        return part;
+    }
+
+    public ToolResultMessagePart AddToolResultPart(
+        MessagePartId id,
+        SessionId sessionId,
+        MessageId assistantToolCallMessageId,
+        int order,
+        string toolCallId,
+        string toolName,
+        bool succeeded,
+        string output,
+        string? error,
+        string? metadataJson,
+        DateTime createdAtUtc)
+    {
+        if (Role != MessageRole.Tool)
         {
             throw new InvalidOperationException(
-                $"Message part order must be '{expectedOrder}', but was '{order}'.");
+                "Only tool messages can contain tool result parts.");
         }
 
-        var part = new TextMessagePart(id, Id, order, text, createdAtUtc);
+        EnsurePartCanBeAdded(id, order);
+        var part = new ToolResultMessagePart(
+            id,
+            Id,
+            sessionId,
+            assistantToolCallMessageId,
+            order,
+            toolCallId,
+            toolName,
+            succeeded,
+            output,
+            error,
+            metadataJson,
+            createdAtUtc);
         _parts.Add(part);
         return part;
     }
@@ -265,6 +313,22 @@ public sealed class Message
         InputTokens = null;
         OutputTokens = null;
         TotalTokens = null;
+    }
+
+
+    private void EnsurePartCanBeAdded(MessagePartId id, int order)
+    {
+        if (_parts.Any(part => part.Id == id))
+        {
+            throw new InvalidOperationException($"Message part '{id}' already exists.");
+        }
+
+        var expectedOrder = _parts.Count + 1;
+        if (order != expectedOrder)
+        {
+            throw new InvalidOperationException(
+                $"Message part order must be '{expectedOrder}', but was '{order}'.");
+        }
     }
 
     private void EnsureAssistant()

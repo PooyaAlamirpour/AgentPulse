@@ -25,7 +25,7 @@ public sealed class CredentialCommandTests
         Assert.Equal("prompt-key", session.GetRequiredCredential());
         Assert.Equal(1, secretReader.ReadCount);
         Assert.Contains("API credential was not found for the current model endpoint.", console.StandardError.ToString(), StringComparison.Ordinal);
-        Assert.Contains("Enter MIMO_API_KEY:", console.StandardError.ToString(), StringComparison.Ordinal);
+        Assert.Contains("Enter OPENAI_API_KEY:", console.StandardError.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain("prompt-key", console.StandardError.ToString(), StringComparison.Ordinal);
         Assert.Equal(0, store.SaveCount);
     }
@@ -182,12 +182,12 @@ public sealed class CredentialCommandTests
         var exception = await Assert.ThrowsAsync<CredentialResolutionException>(() =>
             resolver.ResolveForRunAsync(new ProviderCredentialSession(store)));
 
-        Assert.Contains("Set MIMO_API_KEY", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Set OPENAI_API_KEY", exception.Message, StringComparison.Ordinal);
         Assert.Contains("agentpulse auth set", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
-    public async Task Official_xiaomi_legacy_credential_is_migrated_only_after_success()
+    public async Task Default_endpoint_legacy_credential_is_migrated_only_after_success()
     {
         var console = new TestConsole(isInputRedirected: false);
         var store = new RecordingCredentialStore
@@ -221,7 +221,7 @@ public sealed class CredentialCommandTests
     }
 
     [Fact]
-    public async Task Custom_endpoint_never_reads_or_migrates_legacy_xiaomi_credential()
+    public async Task Custom_endpoint_never_reads_or_migrates_legacy_provider_credential()
     {
         var console = new TestConsole(input: string.Empty, isInputRedirected: true);
         var store = new RecordingCredentialStore
@@ -311,7 +311,7 @@ public sealed class CredentialCommandTests
     }
 
     [Fact]
-    public async Task Auth_status_and_clear_include_legacy_credential_only_for_official_xiaomi_scope()
+    public async Task Auth_status_and_clear_include_legacy_credential_only_for_default_scope()
     {
         var officialConsole = new TestConsole(isInputRedirected: false);
         var officialStore = new RecordingCredentialStore
@@ -591,16 +591,16 @@ public sealed class CredentialCommandTests
 
         public string? StoredCredential
         {
-            get => _scoped.GetValueOrDefault(ProviderCredentialScope.XiaomiDefault.CanonicalValue);
+            get => _scoped.GetValueOrDefault(ProviderCredentialScope.Default.CanonicalValue);
             set
             {
                 if (value is null)
                 {
-                    _scoped.Remove(ProviderCredentialScope.XiaomiDefault.CanonicalValue);
+                    _scoped.Remove(ProviderCredentialScope.Default.CanonicalValue);
                 }
                 else
                 {
-                    _scoped[ProviderCredentialScope.XiaomiDefault.CanonicalValue] = value;
+                    _scoped[ProviderCredentialScope.Default.CanonicalValue] = value;
                 }
             }
         }

@@ -14,7 +14,7 @@ Status values:
 | Behavior | Node baseline | .NET Phase 9 behavior | Status | Coverage |
 |---|---|---|---|---|
 | Command syntax | `run [message..]` plus a larger option set | `agentpulse run [--dir] [--model] [--session] [prompt]` | Intentionally Different | `Help_documents_the_phase_nine_stream_contract`, parser tests |
-| Executable name | MiMo/OpenCode-branded executable | Existing `agentpulse` executable and assembly remain unchanged | Intentionally Different | help process tests, repository docs test |
+| Executable name | reference Node CLI-branded executable | Existing `agentpulse` executable and assembly remain unchanged | Intentionally Different | help process tests, repository docs test |
 | Help output | yargs-generated command help | Stable, provider-neutral help matching the supported surface | Fixed in Phase 9 | `Help_runs_successfully_without_requesting_a_credential`, `Help_documents_the_phase_nine_stream_contract` |
 | Version output | yargs exposes the Node package version | No public version option exists in the approved .NET command surface; `--version` is rejected on stderr with exit `2` | Intentionally Different | `Parser_and_usage_failures_return_the_usage_exit_code` |
 | Unknown command | Parser failure | stderr, exit `2`, empty stdout | Fixed in Phase 9 | `Parser_and_usage_failures_return_the_usage_exit_code` |
@@ -33,7 +33,7 @@ Status values:
 | Session from another project | Project/session association enforced | Safe stderr message, exit `4`, no new message/provider request | Fixed in Phase 9 | `Session_from_another_project_is_rejected_without_creating_messages` |
 | Session busy | Node runtime serializes session work | SQLite lease rejects a concurrent run; exit `4` | Intentionally Different | `Session_busy_is_stable_and_does_not_create_an_extra_message` |
 | Recovered crashed session | Node lifecycle is server/runtime based | Expired database lease is recovered on the next run; abandoned assistant becomes `Failed` | Intentionally Different | `Crash_after_partial_checkpoint_is_recovered_by_the_next_run` |
-| No explicit provider configuration | Provider setup depends on product configuration | Built-in Xiaomi defaults are used; credential resolution then runs, and a missing credential fails before HTTP with exit `3` | Intentionally Different | `Missing_explicit_configuration_uses_built_in_defaults_then_reports_missing_credential` |
+| No explicit provider configuration | Provider setup depends on product configuration | Built-in OpenAI-compatible defaults are used; credential resolution then runs, and a missing credential fails before HTTP with exit `3` | Intentionally Different | `Missing_explicit_configuration_uses_built_in_defaults_then_reports_missing_credential` |
 | Invalid explicit provider configuration | Provider configuration validation | Invalid base URL, empty model, or invalid credential-variable name fails before network access; exit `3` | Fixed in Phase 9 | `Invalid_explicit_model_configuration_returns_configuration_exit_code` |
 | Missing credential | Provider/auth resolution fails | Detected before HTTP; non-interactive mode fails with guidance, while an interactive terminal uses a hidden credential prompt; exit `3` when unresolved | Fixed in Phase 9 | non-interactive and PTY credential process tests |
 | Authentication failure | Provider error renderer | Safe categorized message; exit `5` | Fixed in Phase 9 | provider HTTP failure theory |
@@ -62,7 +62,7 @@ Status values:
 
 | Difference | Node behavior | .NET behavior | Reason | Test covering .NET behavior |
 |---|---|---|---|---|
-| Executable identity | MiMo/OpenCode executable naming | Existing `agentpulse` assembly/command | Avoid an unrelated assembly, namespace, package, and documentation rename | help process tests |
+| Executable identity | reference Node CLI executable naming | Existing `agentpulse` assembly/command | Avoid an unrelated assembly, namespace, package, and documentation rename | help process tests |
 | Supported command surface | Many options, tools, attachment, sharing, and JSON output | Only `--dir`, `--model`, `--session`, positional prompt, and redirected stdin | Later product capabilities are explicitly excluded from Phase 9 | parser/help tests |
 | Positional plus redirected stdin | Redirected text may be appended | Positional prompt takes precedence and stdin remains unread | Preserves the approved Phase 8 input contract and avoids accidental pipe consumption | `Positional_prompt_takes_precedence_over_redirected_stdin` |
 | Output contract | UI and completion rendering depend on format/TTY | stdout is pipe-safe model text; all metadata/logs/errors use stderr | Deterministic shell composition and redirection | stdout/stderr process tests |

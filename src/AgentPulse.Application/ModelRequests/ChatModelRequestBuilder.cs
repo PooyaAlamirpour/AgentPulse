@@ -1,6 +1,8 @@
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ProjectContexts;
 using AgentPulse.Domain.Messages;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentPulse.Application.ModelRequests;
 
@@ -9,11 +11,15 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
     public const string TextPartSeparator = "\n";
 
     private readonly IChatModelHistoryPolicy _historyPolicy;
+    private readonly ILogger<ChatModelRequestBuilder> _logger;
 
-    public ChatModelRequestBuilder(IChatModelHistoryPolicy historyPolicy)
+    public ChatModelRequestBuilder(
+        IChatModelHistoryPolicy historyPolicy,
+        ILogger<ChatModelRequestBuilder>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(historyPolicy);
         _historyPolicy = historyPolicy;
+        _logger = logger ?? NullLogger<ChatModelRequestBuilder>.Instance;
     }
 
     public ChatModelRequest Build(ChatModelRequestBuildInput input)
@@ -54,15 +60,17 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
                 ProjectSystemContextFormatter.Format(input.ProjectContext)),
         };
 
-        foreach (var message in history.OrderBy(static message => message.Sequence))
+        var sendableHistory = history
+            .Where(message =>
+                message.Id != currentUserMessage.Id &&
+                message.Sequence < currentUserMessage.Sequence &&
+                _historyPolicy.ShouldInclude(message.Status))
+            .OrderBy(static message => message.Sequence)
+            .ToArray();
+        var filteredToolTurnMessageIds = GetFilteredToolTurnMessageIds(sendableHistory);
+        foreach (var message in sendableHistory)
         {
-            if (message.Id == currentUserMessage.Id ||
-                message.Sequence >= currentUserMessage.Sequence)
-            {
-                continue;
-            }
-
-            if (!_historyPolicy.ShouldInclude(message.Status))
+            if (filteredToolTurnMessageIds.Contains(message.Id))
             {
                 continue;
             }
@@ -161,13 +169,167 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         }
     }
 
+    private HashSet<MessageId> GetFilteredToolTurnMessageIds(
+        IReadOnlyCollection<Message> sendableHistory)
+    {
+        var filtered = new HashSet<MessageId>();
+        var includedToolMessageIds = new HashSet<MessageId>();
+        var toolMessages = sendableHistory
+            .Where(static message => message.Role == MessageRole.Tool)
+            .ToArray();
+
+        foreach (var assistant in sendableHistory.Where(static message =>
+                     message.Role == MessageRole.Assistant))
+        {
+            var calls = assistant.Parts.OfType<ToolCallMessagePart>().ToArray();
+            if (calls.Length == 0)
+            {
+                continue;
+            }
+
+            var invalidCallId = calls.Any(static call => string.IsNullOrWhiteSpace(call.ToolCallId));
+            var duplicateCallId = calls.GroupBy(static call => call.ToolCallId, StringComparer.Ordinal)
+                .Any(static group => group.Count() != 1);
+            var associatedToolMessages = toolMessages
+                .Select(static message => new
+                {
+                    Message = message,
+                    OrderedParts = message.Parts.OrderBy(static part => part.Order).ToArray(),
+                })
+                .Where(value => value.OrderedParts
+                    .OfType<ToolResultMessagePart>()
+                    .Any(result => result.AssistantToolCallMessageId == assistant.Id &&
+                                   result.SessionId == assistant.SessionId))
+                .ToArray();
+            var sendableResults = associatedToolMessages
+                .Where(static value =>
+                    value.OrderedParts.Length == 1 &&
+                    value.OrderedParts[0] is ToolResultMessagePart)
+                .Select(static value => new
+                {
+                    value.Message,
+                    Result = (ToolResultMessagePart)value.OrderedParts[0],
+                })
+                .Where(value => calls.Any(call =>
+                    string.Equals(value.Result.ToolCallId, call.ToolCallId, StringComparison.Ordinal) &&
+                    string.Equals(value.Result.ToolName, call.ToolName, StringComparison.Ordinal)))
+                .ToArray();
+
+            var complete = !invalidCallId &&
+                           !duplicateCallId &&
+                           calls.All(call => sendableResults.Count(value =>
+                               string.Equals(value.Result.ToolCallId, call.ToolCallId, StringComparison.Ordinal) &&
+                               string.Equals(value.Result.ToolName, call.ToolName, StringComparison.Ordinal)) == 1);
+
+            if (complete)
+            {
+                foreach (var result in sendableResults)
+                {
+                    includedToolMessageIds.Add(result.Message.Id);
+                }
+
+                continue;
+            }
+
+            filtered.Add(assistant.Id);
+
+            _logger.LogInformation(
+                "Filtered incomplete tool turn {AssistantMessageId} from session {SessionId} with {ToolCallCount} calls and {ToolResultCount} associated results.",
+                assistant.Id,
+                assistant.SessionId,
+                calls.Length,
+                sendableResults.Length);
+        }
+
+        foreach (var toolMessage in toolMessages)
+        {
+            if (!includedToolMessageIds.Contains(toolMessage.Id))
+            {
+                filtered.Add(toolMessage.Id);
+            }
+        }
+
+        return filtered;
+    }
+
     private static ChatModelMessage ConvertMessage(
         Message message,
         bool isCurrentUserMessage)
     {
-        var role = ConvertRole(message.Role);
-        var content = CombineTextParts(message, isCurrentUserMessage);
-        return new ChatModelMessage(role, content);
+        return message.Role switch
+        {
+            MessageRole.User => new ChatModelMessage(
+                ChatModelRole.User,
+                CombineTextParts(message, isCurrentUserMessage, allowEmpty: false)),
+            MessageRole.Assistant => ConvertAssistantMessage(message),
+            MessageRole.Tool => ConvertToolMessage(message),
+            _ => throw new ChatModelRequestException(
+                ChatModelRequestErrorCode.UnsupportedMessageRole,
+                $"Message role '{message.Role}' is not supported."),
+        };
+    }
+
+    private static ChatModelMessage ConvertAssistantMessage(Message message)
+    {
+        var orderedParts = message.Parts.OrderBy(static part => part.Order).ToArray();
+        var calls = orderedParts
+            .OfType<ToolCallMessagePart>()
+            .Select(static part => new ChatModelToolCall(
+                part.ToolCallId,
+                part.ToolName,
+                part.ArgumentsJson,
+                part.Order))
+            .ToArray();
+        var content = CombineTextParts(message, isCurrentUserMessage: false, allowEmpty: calls.Length > 0);
+
+        if (calls.Length > 0)
+        {
+            return ChatModelMessage.CreateAssistantToolCalls(
+                string.IsNullOrEmpty(content) ? null : content,
+                calls);
+        }
+
+        return new ChatModelMessage(ChatModelRole.Assistant, content);
+    }
+
+    private static ChatModelMessage ConvertToolMessage(Message message)
+    {
+        var orderedParts = message.Parts.OrderBy(static part => part.Order).ToArray();
+        if (orderedParts.Length != 1 || orderedParts[0] is not ToolResultMessagePart result)
+        {
+            throw new ChatModelRequestException(
+                ChatModelRequestErrorCode.UnsupportedMessagePart,
+                $"Tool message '{message.Id}' must contain exactly one tool result part.");
+        }
+
+        var content = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            success = result.Succeeded,
+            output = result.Output,
+            error = result.Error,
+            metadata = ParseToolMetadata(result.MetadataJson),
+        });
+        return ChatModelMessage.CreateToolResult(result.ToolCallId, result.ToolName, content);
+    }
+
+    private static System.Text.Json.JsonElement? ParseToolMetadata(string? metadataJson)
+    {
+        if (string.IsNullOrWhiteSpace(metadataJson))
+        {
+            return null;
+        }
+
+        try
+        {
+            return System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(metadataJson);
+        }
+        catch (System.Text.Json.JsonException exception)
+        {
+            throw new ChatModelRequestException(
+                ChatModelRequestErrorCode.UnsupportedMessagePart,
+                "A stored tool result contains invalid metadata JSON.",
+                exception);
+        }
     }
 
     private static ChatModelRole ConvertRole(MessageRole role)
@@ -176,6 +338,7 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         {
             MessageRole.User => ChatModelRole.User,
             MessageRole.Assistant => ChatModelRole.Assistant,
+            MessageRole.Tool => ChatModelRole.Tool,
             _ => throw new ChatModelRequestException(
                 ChatModelRequestErrorCode.UnsupportedMessageRole,
                 $"Message role '{role}' is not supported."),
@@ -187,29 +350,30 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         _ = ConvertRole(role);
     }
 
-    private static string CombineTextParts(Message message, bool isCurrentUserMessage)
+    private static string CombineTextParts(
+        Message message,
+        bool isCurrentUserMessage,
+        bool allowEmpty)
     {
         var orderedParts = message.Parts
             .OrderBy(static part => part.Order)
             .ToArray();
+        var textParts = orderedParts
+            .OfType<TextMessagePart>()
+            .Select(static part => part.Text)
+            .ToArray();
 
-        var textParts = new string[orderedParts.Length];
-
-        for (var index = 0; index < orderedParts.Length; index++)
+        var unsupported = orderedParts.FirstOrDefault(static part =>
+            part is not TextMessagePart and not ToolCallMessagePart);
+        if (unsupported is not null)
         {
-            if (orderedParts[index] is not TextMessagePart textPart)
-            {
-                throw new ChatModelRequestException(
-                    ChatModelRequestErrorCode.UnsupportedMessagePart,
-                    $"Message part type '{orderedParts[index].GetType().Name}' is not supported.");
-            }
-
-            textParts[index] = textPart.Text;
+            throw new ChatModelRequestException(
+                ChatModelRequestErrorCode.UnsupportedMessagePart,
+                $"Message part type '{unsupported.GetType().Name}' is not supported for role '{message.Role}'.");
         }
 
         var content = string.Join(TextPartSeparator, textParts);
-
-        if (string.IsNullOrWhiteSpace(content))
+        if (!allowEmpty && string.IsNullOrWhiteSpace(content))
         {
             var errorCode = isCurrentUserMessage
                 ? ChatModelRequestErrorCode.EmptyUserPrompt
@@ -217,10 +381,10 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
             var description = isCurrentUserMessage
                 ? "The current user prompt cannot be empty."
                 : $"Message '{message.Id}' has no usable text content.";
-
             throw new ChatModelRequestException(errorCode, description);
         }
 
         return content;
     }
+
 }

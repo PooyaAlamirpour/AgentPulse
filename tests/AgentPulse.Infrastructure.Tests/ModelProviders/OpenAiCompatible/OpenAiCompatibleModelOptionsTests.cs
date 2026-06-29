@@ -5,21 +5,21 @@ namespace AgentPulse.Infrastructure.Tests.ModelProviders.OpenAiCompatible;
 public sealed class OpenAiCompatibleModelOptionsTests
 {
     [Fact]
-    public void Defaults_preserve_the_xiaomi_profile()
+    public void Defaults_use_the_generic_openai_compatible_profile()
     {
         var options = new OpenAiCompatibleModelOptions();
 
         options.Validate();
 
-        Assert.Equal("https://api.xiaomimimo.com/v1", options.BaseUrl);
+        Assert.Equal("https://api.openai.com/v1", options.BaseUrl);
         Assert.Equal("chat/completions", options.ChatCompletionsPath);
-        Assert.Equal("mimo-v2.5-pro", options.Model);
-        Assert.Equal(OpenAiCompatibleAuthenticationMode.ApiKeyHeader, options.AuthenticationMode);
+        Assert.Equal("gpt-4.1-mini", options.Model);
+        Assert.Equal(OpenAiCompatibleAuthenticationMode.Bearer, options.AuthenticationMode);
         Assert.Equal("api-key", options.ApiKeyHeaderName);
-        Assert.Equal("MIMO_API_KEY", options.ApiKeyEnvironmentVariable);
+        Assert.Equal("OPENAI_API_KEY", options.ApiKeyEnvironmentVariable);
         Assert.Equal(4096, options.MaxCompletionTokens);
         Assert.Equal("disabled", options.ThinkingMode);
-        Assert.True(options.IncludeThinkingConfiguration);
+        Assert.False(options.IncludeThinkingConfiguration);
         Assert.Equal(TimeSpan.FromSeconds(30), options.FirstByteTimeout);
         Assert.Equal(TimeSpan.FromMinutes(1), options.StreamIdleTimeout);
         Assert.Equal(TimeSpan.FromSeconds(10), options.ErrorBodyReadTimeout);
@@ -101,6 +101,7 @@ public sealed class OpenAiCompatibleModelOptionsTests
     {
         var options = new OpenAiCompatibleModelOptions
         {
+            AuthenticationMode = OpenAiCompatibleAuthenticationMode.ApiKeyHeader,
             ApiKeyHeaderName = headerName,
         };
 
@@ -114,6 +115,7 @@ public sealed class OpenAiCompatibleModelOptionsTests
     {
         var options = new OpenAiCompatibleModelOptions
         {
+            AuthenticationMode = OpenAiCompatibleAuthenticationMode.ApiKeyHeader,
             ApiKeyHeaderName = headerName,
         };
 

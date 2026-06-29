@@ -265,7 +265,7 @@ public sealed partial class CliProcessTests
 
             Assert.Equal(ExitCodes.Configuration, result.ExitCode);
             Assert.Equal(string.Empty, result.StandardOutput);
-            Assert.Contains("Set MIMO_API_KEY", result.StandardError, StringComparison.Ordinal);
+            Assert.Contains("Set OPENAI_API_KEY", result.StandardError, StringComparison.Ordinal);
             Assert.Contains("agentpulse auth set", result.StandardError, StringComparison.Ordinal);
             Assert.DoesNotContain(
                 "configuration is missing",
@@ -319,7 +319,7 @@ public sealed partial class CliProcessTests
     }
 
     [Fact]
-    public async Task Partial_provider_failure_preserves_stdout_and_persistence_and_allows_continuation()
+    public async Task Partial_provider_failure_is_not_exposed_before_completion_and_allows_continuation()
     {
         var root = CreateTemporaryRoot("AgentPulse Phase 9 Partial Failure");
         var databasePath = Path.Combine(root, "agentpulse.db");
@@ -333,13 +333,13 @@ public sealed partial class CliProcessTests
                 CreateRunEnvironment(failureServer.BaseUrl, root));
 
             Assert.Equal(ExitCodes.Provider, failed.ExitCode);
-            Assert.Equal(CliLocalModelServer.ExpectedPartialText, failed.StandardOutput);
+            Assert.Equal(string.Empty, failed.StandardOutput);
             Assert.Contains("invalid response", failed.StandardError, StringComparison.OrdinalIgnoreCase);
             var sessionId = await ReadSingleSessionIdAsync(databasePath);
             await AssertTerminalRunStateAsync(
                 databasePath,
                 "Failed",
-                CliLocalModelServer.ExpectedPartialText,
+                string.Empty,
                 expectedLeaseCount: 0);
 
             await using var successServer = CliLocalModelServer.StartSuccessful();
@@ -407,7 +407,7 @@ public sealed partial class CliProcessTests
     }
 
     [Fact]
-    public async Task Crash_after_partial_checkpoint_is_recovered_by_the_next_run()
+    public async Task Crash_during_incomplete_completion_is_recovered_by_the_next_run()
     {
         var root = CreateTemporaryRoot("AgentPulse Phase 9 Crash Recovery");
         var databasePath = Path.Combine(root, "agentpulse.db");
@@ -422,14 +422,13 @@ public sealed partial class CliProcessTests
             var crashedError = crashedProcess.StandardError.ReadToEndAsync();
 
             await hangingServer.PartialResponseSent.WaitAsync(TimeSpan.FromSeconds(10));
-            var sessionId = await WaitForPartialCheckpointAsync(
+            var sessionId = await WaitForSingleSessionIdAsync(
                 databasePath,
-                CliLocalModelServer.ExpectedPartialText,
                 CancellationToken.None);
 
             crashedProcess.Kill(entireProcessTree: true);
             await crashedProcess.WaitForExitAsync(CancellationToken.None);
-            Assert.Contains(CliLocalModelServer.ExpectedPartialText, await crashedOutput, StringComparison.Ordinal);
+            Assert.Equal(string.Empty, await crashedOutput);
             _ = await crashedError;
 
             await ExpireRunLeaseAsync(databasePath, sessionId);
@@ -449,7 +448,7 @@ public sealed partial class CliProcessTests
             Assert.Equal("Failed", await ReadScalarStringAsync(
                 databasePath,
                 "SELECT Status FROM Messages WHERE Role = 'Assistant' ORDER BY Sequence LIMIT 1;"));
-            Assert.Equal(CliLocalModelServer.ExpectedPartialText, await ReadScalarStringAsync(
+            Assert.Equal(string.Empty, await ReadScalarStringAsync(
                 databasePath,
                 "SELECT p.Text FROM MessageParts p JOIN Messages m ON m.Id = p.MessageId " +
                 "WHERE m.Role = 'Assistant' ORDER BY m.Sequence LIMIT 1;"));
@@ -473,7 +472,7 @@ public sealed partial class CliProcessTests
                 HttpStatusCode.ServiceUnavailable,
                 $"{{\"error\":{{\"message\":\"{SecretMarker}\"}}}}");
             var environment = CreateRunEnvironment(server.BaseUrl, root);
-            environment["MIMO_API_KEY"] = SecretMarker;
+            environment["OPENAI_API_KEY"] = SecretMarker;
             environment["Logging__LogLevel__Default"] = "Debug";
             environment["Logging__LogLevel__Microsoft"] = "Warning";
 
@@ -659,7 +658,7 @@ public sealed partial class CliProcessTests
     {
         var environment = new Dictionary<string, string?>(StringComparer.Ordinal)
         {
-            ["MIMO_API_KEY"] = null,
+            ["OPENAI_API_KEY"] = null,
             ["AgentPulse__Persistence__DatabasePath"] = Path.Combine(root, "agentpulse.db"),
             ["AgentPulse__Security__CredentialRootPath"] = Path.Combine(root, "credentials"),
             ["HOME"] = Path.Combine(root, "home"),
@@ -740,33 +739,6 @@ public sealed partial class CliProcessTests
                 command.CommandText = "SELECT Id FROM Sessions LIMIT 1;";
                 var value = await command.ExecuteScalarAsync(cancellationToken);
                 return value is null ? null : Guid.Parse(Convert.ToString(value, CultureInfo.InvariantCulture)!);
-            },
-            cancellationToken);
-    }
-
-    private static async Task<Guid> WaitForPartialCheckpointAsync(
-        string databasePath,
-        string expectedText,
-        CancellationToken cancellationToken)
-    {
-        return await WaitForDatabaseValueAsync<Guid>(
-            databasePath,
-            async connection =>
-            {
-                await using var command = connection.CreateCommand();
-                command.CommandText =
-                    "SELECT s.Id, p.Text FROM Sessions s " +
-                    "JOIN Messages m ON m.SessionId = s.Id " +
-                    "JOIN MessageParts p ON p.MessageId = m.Id " +
-                    "WHERE m.Role = 'Assistant' LIMIT 1;";
-                await using var reader = await command.ExecuteReaderAsync(cancellationToken);
-                if (!await reader.ReadAsync(cancellationToken) ||
-                    !string.Equals(reader.GetString(1), expectedText, StringComparison.Ordinal))
-                {
-                    return null;
-                }
-
-                return Guid.Parse(reader.GetString(0));
             },
             cancellationToken);
     }
@@ -897,7 +869,7 @@ public sealed partial class CliProcessTests
             await using var server =
                 CliLocalModelServer.StartSuccessfulWithExpectedCredential(secretMarker);
             var environment = CreateRunEnvironment(server.BaseUrl, root);
-            environment["MIMO_API_KEY"] = null;
+            environment["OPENAI_API_KEY"] = null;
             environment["AgentPulse__Model__ApiKeyEnvironmentVariable"] = credentialVariable;
             environment[credentialVariable] = null;
             environment["Logging__LogLevel__Default"] = "Debug";
@@ -963,7 +935,7 @@ public sealed partial class CliProcessTests
 
     [Fact]
     [Trait("Category", "ProcessInterrupt")]
-    public async Task Interrupt_after_partial_token_preserves_partial_state_and_releases_the_lease()
+    public async Task Interrupt_during_incomplete_completion_releases_the_lease_without_exposing_partial_text()
     {
         const string secretMarker = "phase9-interactive-secret-marker";
         var root = CreateTemporaryRoot("AgentPulse Phase 9 Ctrl C Partial");
@@ -973,7 +945,7 @@ public sealed partial class CliProcessTests
         {
             await using var server = CliLocalModelServer.StartHangingAfterPartial();
             var environment = CreateRunEnvironment(server.BaseUrl, root);
-            environment["MIMO_API_KEY"] = secretMarker;
+            environment["OPENAI_API_KEY"] = secretMarker;
             using var process = CliInterruptProcessHarness.Start(
                 FindCliAssemblyPath(),
                 ["run", "hello"],
@@ -983,9 +955,8 @@ public sealed partial class CliProcessTests
             var errorTask = process.StandardError.ReadToEndAsync();
 
             await server.PartialResponseSent.WaitAsync(TimeSpan.FromSeconds(10));
-            var sessionId = await WaitForPartialCheckpointAsync(
+            var sessionId = await WaitForSingleSessionIdAsync(
                 databasePath,
-                CliLocalModelServer.ExpectedPartialText,
                 CancellationToken.None);
             await process.SendInterruptAsync();
             await CliInterruptProcessHarness.WaitForExitAsync(process);
@@ -993,7 +964,7 @@ public sealed partial class CliProcessTests
             var stdout = await outputTask;
             var stderr = await errorTask;
             Assert.Equal(ExitCodes.Cancelled, process.ExitCode);
-            Assert.Equal(CliLocalModelServer.ExpectedPartialText, stdout);
+            Assert.Equal(string.Empty, stdout);
             Assert.Contains("cancelled", stderr, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(" at ", stderr, StringComparison.Ordinal);
             Assert.DoesNotContain(secretMarker, stdout, StringComparison.Ordinal);
@@ -1001,7 +972,7 @@ public sealed partial class CliProcessTests
             await AssertTerminalRunStateAsync(
                 databasePath,
                 "Cancelled",
-                CliLocalModelServer.ExpectedPartialText,
+                string.Empty,
                 expectedLeaseCount: 0);
             Assert.Equal(
                 1,

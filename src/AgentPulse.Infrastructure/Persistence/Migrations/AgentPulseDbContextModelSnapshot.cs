@@ -10,6 +10,6 @@ partial class AgentPulseDbContextModelSnapshot : ModelSnapshot
 {
     protected override void BuildModel(ModelBuilder modelBuilder)
     {
-        RunMessageMetadataModel.Build(modelBuilder);
+        ToolResultTurnIntegrityModel.Build(modelBuilder);
     }
 }

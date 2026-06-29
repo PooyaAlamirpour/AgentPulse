@@ -40,17 +40,16 @@ public sealed record ProviderCredentialScope
 
     public string FileId { get; }
 
-    public bool IsOfficialXiaomi =>
+    public bool IsDefaultEndpoint =>
         string.Equals(Scheme, Uri.UriSchemeHttps, StringComparison.Ordinal) &&
-        string.Equals(Host, "api.xiaomimimo.com", StringComparison.Ordinal) &&
+        string.Equals(Host, "api.openai.com", StringComparison.Ordinal) &&
         Port == 443 &&
-        AuthenticationMode == OpenAiCompatibleAuthenticationMode.ApiKeyHeader &&
-        string.Equals(ApiKeyHeaderName, "api-key", StringComparison.Ordinal);
+        AuthenticationMode == OpenAiCompatibleAuthenticationMode.Bearer;
 
-    public static ProviderCredentialScope XiaomiDefault { get; } = Create(
-        new Uri(OpenAiCompatibleModelOptions.XiaomiDefaultBaseUrl, UriKind.Absolute),
-        OpenAiCompatibleAuthenticationMode.ApiKeyHeader,
-        "api-key");
+    public static ProviderCredentialScope Default { get; } = Create(
+        new Uri(OpenAiCompatibleModelOptions.DefaultBaseUrl, UriKind.Absolute),
+        OpenAiCompatibleAuthenticationMode.Bearer,
+        apiKeyHeaderName: null);
 
     public static ProviderCredentialScope Create(
         Uri baseUri,

@@ -4,7 +4,7 @@
 
 - .NET 8 SDK
 - Git when repository-aware project resolution is needed
-- The built-in Xiaomi provider defaults, or an explicit OpenAI-compatible endpoint and model override
+- The built-in OpenAI-compatible provider defaults, or an explicit OpenAI-compatible endpoint and model override
 - An API credential supplied through the configured environment variable or `agentpulse auth set`
 
 The real credential, prompt, and conversation history must not be placed in committed configuration files or diagnostic output.
@@ -41,7 +41,7 @@ dotnet run --project src/AgentPulse.Cli -- run "Explain this project"
 dotnet run --project src/AgentPulse.Cli -- run --dir "/work/My Project" "Explain this project"
 ```
 
-The executable name used in help and packaged execution is `agentpulse`; Phase 9 does not rename the assembly or namespaces to `mimo`.
+The executable name used in help and packaged execution is `agentpulse`; the assembly and namespaces retain the `AgentPulse` identity.
 
 ## Redirected stdin
 
@@ -65,7 +65,7 @@ A non-interactive process never opens a credential prompt and fails before HTTP 
 
 ## Provider configuration
 
-Without `appsettings.json` or environment overrides, AgentPulse uses the built-in Xiaomi base URL, model, and `MIMO_API_KEY` credential-variable name. Missing explicit model configuration is therefore not an error by itself. If the credential is absent, resolution fails before any HTTP request with exit code `3` and actionable credential guidance.
+Without `appsettings.json` or environment overrides, AgentPulse uses the built-in OpenAI-compatible base URL, model, and `OPENAI_API_KEY` credential-variable name. Missing explicit model configuration is therefore not an error by itself. If the credential is absent, resolution fails before any HTTP request with exit code `3` and actionable credential guidance.
 
 The configurable profile is under `AgentPulse:Model`. Environment variables use the standard double-underscore form, for example:
 
@@ -90,6 +90,19 @@ export PROVIDER_API_KEY='<set outside source control>'
 Alternatively, run `dotnet run --project src/AgentPulse.Cli -- auth set` from an interactive terminal. Stored credentials are scoped to the configured endpoint and protected by the existing credential store.
 
 An explicit configuration with a non-absolute/unsupported base URL, an empty model, or an invalid/empty credential environment-variable name fails during startup with exit code `3`.
+
+## Tool execution configuration
+
+The built-in read-only tools are configured under `AgentPulse:Tools`. Environment-variable overrides use the standard double-underscore form, for example:
+
+```powershell
+$env:AgentPulse__Tools__MaxToolIterations = "8"
+$env:AgentPulse__Tools__MaxReadLines = "500"
+$env:AgentPulse__Tools__MaxGlobResults = "200"
+$env:AgentPulse__Tools__MaxGrepResults = "100"
+```
+
+All tool paths are resolved against the selected workspace. The built-in tools cannot write files and reject paths that escape the workspace.
 
 ## Session continuation
 

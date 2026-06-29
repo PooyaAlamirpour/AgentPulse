@@ -262,6 +262,14 @@ public sealed class CliErrorRenderer(
                 ExitCodes.Failure,
                 "The model response could not be written safely.",
                 "Output"),
+            ModelRunErrorCode.MaxToolIterationsReached => new(
+                ExitCodes.Failure,
+                "The agent reached the configured maximum number of tool iterations.",
+                "MaxToolIterations"),
+            ModelRunErrorCode.InvalidAgentResponse => new(
+                ExitCodes.Provider,
+                "The model returned neither a final response nor a valid tool call.",
+                "InvalidAgentResponse"),
             _ => new(
                 ExitCodes.Failure,
                 "The model run failed before completion.",

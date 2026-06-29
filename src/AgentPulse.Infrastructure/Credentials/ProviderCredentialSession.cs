@@ -14,7 +14,7 @@ public sealed class ProviderCredentialSession : IProviderCredentialSession
         : this(
             credentialStore,
             NullLegacyProviderCredentialStore.Instance,
-            ProviderCredentialScope.XiaomiDefault)
+            ProviderCredentialScope.Default)
     {
     }
 

@@ -40,6 +40,8 @@ internal sealed class MessagePartConfiguration : IEntityTypeConfiguration<Messag
 
         builder.HasDiscriminator<string>("PartType")
             .HasValue<TextMessagePart>("text")
+            .HasValue<ToolCallMessagePart>("tool_call")
+            .HasValue<ToolResultMessagePart>("tool_result")
             .IsComplete(false);
     }
 }

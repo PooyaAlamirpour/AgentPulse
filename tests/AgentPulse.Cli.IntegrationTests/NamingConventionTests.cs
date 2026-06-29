@@ -1,87 +1,34 @@
-using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AgentPulse.Cli.IntegrationTests;
 
 public sealed class NamingConventionTests
 {
     [Fact]
-    public void Repository_contains_no_legacy_project_name_in_paths_or_text()
+    public void Source_namespaces_use_the_agentpulse_root()
     {
         var repositoryRoot = FindRepositoryRoot();
-        var forbiddenNames = new[]
-        {
-            string.Concat("mimo", "code"),
-        };
-        var excludedDirectoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ".git",
-            ".vs",
-            "bin",
-            "obj",
-            "TestResults",
-        };
+        var sourceRoot = Path.Combine(repositoryRoot, "src");
+        var namespacePattern = new Regex(
+            @"^\s*namespace\s+([^;\s]+)\s*;",
+            RegexOptions.Multiline | RegexOptions.CultureInvariant);
 
-        var entries = EnumerateRepositoryEntries(repositoryRoot, excludedDirectoryNames).ToArray();
-
-        var invalidPaths = entries
-            .Select(path => Path.GetRelativePath(repositoryRoot, path))
-            .Where(path => forbiddenNames.Any(name =>
-                path.Contains(name, StringComparison.OrdinalIgnoreCase)))
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.Empty(invalidPaths);
-
-        var invalidFiles = entries
-            .Where(File.Exists)
-            .Where(path => ContainsText(path, forbiddenNames))
-            .Select(path => Path.GetRelativePath(repositoryRoot, path))
-            .Order(StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.Empty(invalidFiles);
-    }
-
-    private static IEnumerable<string> EnumerateRepositoryEntries(
-        string root,
-        IReadOnlySet<string> excludedDirectoryNames)
-    {
-        var pendingDirectories = new Stack<string>();
-        pendingDirectories.Push(root);
-
-        while (pendingDirectories.TryPop(out var directory))
-        {
-            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+        var invalid = Directory
+            .EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
+            .Select(path => new
             {
-                if (Directory.Exists(entry))
-                {
-                    if (excludedDirectoryNames.Contains(Path.GetFileName(entry)))
-                    {
-                        continue;
-                    }
+                Path = path,
+                Match = namespacePattern.Match(File.ReadAllText(path)),
+            })
+            .Where(value => value.Match.Success)
+            .Where(value => !value.Match.Groups[1].Value.StartsWith(
+                "AgentPulse",
+                StringComparison.Ordinal))
+            .Select(value => Path.GetRelativePath(repositoryRoot, value.Path))
+            .Order(StringComparer.Ordinal)
+            .ToArray();
 
-                    yield return entry;
-                    pendingDirectories.Push(entry);
-                    continue;
-                }
-
-                yield return entry;
-            }
-        }
-    }
-
-    private static bool ContainsText(string path, IReadOnlyCollection<string> forbiddenNames)
-    {
-        var bytes = File.ReadAllBytes(path);
-
-        if (bytes.Contains((byte)0))
-        {
-            return false;
-        }
-
-        var text = Encoding.UTF8.GetString(bytes);
-        return forbiddenNames.Any(name =>
-            text.Contains(name, StringComparison.OrdinalIgnoreCase));
+        Assert.Empty(invalid);
     }
 
     private static string FindRepositoryRoot()

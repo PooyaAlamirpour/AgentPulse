@@ -74,9 +74,9 @@ packages/opencode/src/storage/schema.ts
 - ترتیب `system → history → current user`
 - بدون Provider واقعی، Tool و Agent
 
-### فاز ۶ — Provider واقعی Xiaomi MiMo و جریان عمودی Streaming
+### فاز ۶ — Provider واقعی OpenAI-compatible و جریان عمودی Streaming
 
-- Provider واقعی Xiaomi MiMo با OpenAI-compatible HTTP transport
+- Provider واقعی OpenAI-compatible با OpenAI-compatible HTTP transport
 - `IAsyncEnumerable<ModelStreamEvent>` و SSE parser افزایشی
 - TextDelta/Completed/Usage، finish reason و timeoutهای تفکیک‌شده
 - ذخیره امن Credential در User Scope و فرمان‌های `auth`
@@ -88,12 +88,12 @@ packages/opencode/src/storage/schema.ts
 ### فاز ۷ — عمومی‌سازی و سخت‌سازی Provider OpenAI-Compatible
 
 - تبدیل Transport فاز ۶ به یک `OpenAiCompatibleChatModelClient` عمومی
-- حفظ Xiaomi MiMo به‌عنوان Profile پیش‌فرض بدون Provider Registry
+- حفظ OpenAI-compatible به‌عنوان Profile پیش‌فرض بدون Provider Registry
 - Configuration عمومی Base URL، Path، Model، Authentication و Timeout
 - Credential Scope وابسته به Origin و Authentication فعلی
 - جلوگیری از Redirect و نشت Credential به Host دیگر
 - Error taxonomy عمومی و تشخیص `BeforeFirstToken` / `AfterFirstToken`
-- Contract Test قطعی برای Xiaomi-style و Bearer-style
+- Contract Test قطعی برای OpenAI-compatible-style و Bearer-style
 
 ### فاز ۸ — اتصال جریان عمودی نهایی و Reliability
 
@@ -120,6 +120,10 @@ packages/opencode/src/storage/schema.ts
 - بدون قابلیت محصولی جدید یا Migration
 
 ---
+
+## یادداشت وضعیت فعلی
+
+این سند نگاشت تاریخی فازهای ۰ تا ۹ است. پس از آن، Tool Calling، Agent Loop و ابزارهای read-only در فاز مستقل بعدی پیاده‌سازی شده‌اند؛ فهرست Scope زیر فقط محدودیت همان برنامه تاریخی را ثبت می‌کند.
 
 ## 4. موارد صریحاً خارج از Scope فازهای ۰ تا ۹
 
@@ -175,11 +179,11 @@ Metrics/Telemetry/Control Plane
 | Recovery Session رهاشده | RunState/Status + Persistence | ۴ و ۹ | recovery service + integration test |
 | Provider-neutral request/events | `session/llm.ts` و `message-v2.ts` | ۵ | Application contracts |
 | ساخت System + History + User request | `system.ts`، `prompt.ts`، `llm.ts` | ۵ | `BuildModelRequest` |
-| Streaming واقعی و تست قطعی | provider/LLM transport | ۶ | Xiaomi client + HTTP Test Server محلی در Tests |
+| Streaming واقعی و تست قطعی | provider/LLM transport | ۶ | OpenAI-compatible client + HTTP Test Server محلی در Tests |
 | نمایش فوری TextDelta | تفاوت آگاهانه با `run.ts` | ۶ | `IConsoleRenderer` adapter |
 | ذخیره دوره‌ای پاسخ ناقص | Processor/Part updates | ۶ | streaming persistence coordinator |
-| OpenAI-compatible HTTP و Xiaomi MiMo | provider/config/auth files | ۶ و ۷ | `OpenAiCompatibleChatModelClient` با Profile پیش‌فرض Xiaomi |
-| SSE parser | Provider/LLM transport | ۶ و ۷ | `OpenAiCompatibleSseParser` عمومی با Adapter سازگار Xiaomi |
+| OpenAI-compatible HTTP و OpenAI-compatible | provider/config/auth files | ۶ و ۷ | `OpenAiCompatibleChatModelClient` با Profile پیش‌فرض OpenAI-compatible |
+| SSE parser | Provider/LLM transport | ۶ و ۷ | `OpenAiCompatibleSseParser` عمومی با Adapter سازگار OpenAI-compatible |
 | Orchestrator نهایی | `run.ts` + prompt/processor | ۶ | `RunPrompt` |
 | CLI end-to-end واقعی | `run.ts` | ۶ | `AgentPulse.Cli` composition |
 | Exit Code/stdout/stderr parity | `run.ts` و `index.ts` | ۹ | Process integration tests |
@@ -339,12 +343,12 @@ SystemClock
 Id generator implementation در صورت نیاز
 ```
 
-### فاز ۶ — Xiaomi Provider، SSE و Credential
+### فاز ۶ — OpenAI-compatible Provider، SSE و Credential
 
 ```text
-XiaomiChatModelClient
-XiaomiSseParser
-XiaomiModelOptions
+OpenAI-compatibleChatModelClient
+OpenAI-compatibleSseParser
+OpenAI-compatibleModelOptions
 IHttpClientFactory registration
 Provider error mapper
 DataProtectionProviderCredentialStore
@@ -366,7 +370,7 @@ OpenAI-compatible error parser
 ModelFailureStage
 ```
 
-Client عمومی تنها Implementation فعال `IChatModelClient` است. کلاس‌های Xiaomi فقط Adapter سازگار یا Profile پیش‌فرض‌اند و مسیر Parse موازی ایجاد نمی‌کنند. Scope Credential از Scheme، Host، Port و Authentication ساخته می‌شود و Redirect خودکار HTTP غیرفعال است.
+Client عمومی تنها Implementation فعال `IChatModelClient` است. کلاس‌های OpenAI-compatible فقط Adapter سازگار یا Profile پیش‌فرض‌اند و مسیر Parse موازی ایجاد نمی‌کنند. Scope Credential از Scheme، Host، Port و Authentication ساخته می‌شود و Redirect خودکار HTTP غیرفعال است.
 
 ### فاز ۹ — Logging و hardening
 

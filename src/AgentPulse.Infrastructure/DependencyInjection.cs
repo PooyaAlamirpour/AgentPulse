@@ -1,10 +1,14 @@
+using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRuns;
+using AgentPulse.Application.Workspaces;
 using AgentPulse.Application.Persistence;
+using AgentPulse.Infrastructure.AgentTools;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
+using AgentPulse.Infrastructure.Workspaces;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -54,6 +58,7 @@ public static class DependencyInjection
 
         services.AddSingleton<IAgentPulseDatabaseInitializer, AgentPulseDatabaseInitializer>();
         services.AddSingleton<IStreamingRunPersistence, StreamingRunPersistence>();
+        services.AddSingleton<IAgentToolTurnPersistence, AgentToolTurnPersistence>();
         services.AddSingleton<IRunLeaseRenewalService, RunLeaseRenewalService>();
 
         return services;
@@ -64,7 +69,7 @@ public static class DependencyInjection
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.TryAddSingleton(ProviderCredentialScope.XiaomiDefault);
+        services.TryAddSingleton(ProviderCredentialScope.Default);
         services.AddSingleton<DataProtectionProviderCredentialStore>();
         services.AddSingleton<IProviderCredentialStore>(serviceProvider =>
             serviceProvider.GetRequiredService<DataProtectionProviderCredentialStore>());
@@ -115,6 +120,17 @@ public static class DependencyInjection
         services.AddSingleton(options);
         services.AddSingleton(options.CreateCredentialScope());
         return services.AddOpenAiCompatibleModelProvider();
+    }
+
+    public static IServiceCollection AddAgentTools(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        services.AddSingleton<IWorkspacePathResolver, WorkspacePathResolver>();
+        services.AddSingleton<IAgentTool, ReadAgentTool>();
+        services.AddSingleton<IAgentTool, GlobAgentTool>();
+        services.AddSingleton<IAgentTool, GrepAgentTool>();
+        services.AddSingleton<IAgentToolRegistry, AgentToolRegistry>();
+        return services;
     }
 
 }
