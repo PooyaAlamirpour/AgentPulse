@@ -3,14 +3,18 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.Workspaces;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentPulse.Infrastructure.AgentTools;
 
 public sealed class GrepAgentTool(
     IWorkspacePathResolver pathResolver,
-    AgentToolOptions options) : IAgentTool
+    AgentToolOptions options,
+    ILogger<GrepAgentTool>? logger = null) : IAgentTool, IPermissionAwareAgentTool
 {
     private const int MaximumRenderedLineLength = 500;
+    private readonly ILogger<GrepAgentTool> _logger = logger ?? NullLogger<GrepAgentTool>.Instance;
 
     public string Name => "grep";
 
@@ -88,6 +92,32 @@ public sealed class GrepAgentTool(
                 continue;
             }
 
+            var relative = Path.GetRelativePath(context.WorkspaceRoot, file).Replace('\\', '/');
+            var authorization = await context.AuthorizeResourceAsync(
+                "search",
+                relative,
+                $"Search workspace file '{relative}'.",
+                cancellationToken);
+            if (!authorization.IsAllowed)
+            {
+                if (authorization.IsExplicitlyDenied)
+                {
+                    _logger.LogInformation(
+                        "Resource excluded because of explicit deny before grep content access for target {Target}.",
+                        relative);
+                    continue;
+                }
+
+                _logger.LogWarning(
+                    "Resource permission evaluation failed for grep target {Target}.",
+                    relative);
+                _logger.LogWarning(
+                    "Grep tool aborted because resource permission could not be resolved for target {Target}.",
+                    relative);
+                return authorization.Failure ?? AgentToolResult.Failure(
+                    $"Resource permission evaluation failed for '{relative}'.");
+            }
+
             var info = new FileInfo(file);
             if (info.Length > options.MaxGrepFileBytes || await IsBinaryAsync(file, cancellationToken))
             {
@@ -124,7 +154,6 @@ public sealed class GrepAgentTool(
                     var rendered = line.Length > MaximumRenderedLineLength
                         ? line[..MaximumRenderedLineLength] + "..."
                         : line;
-                    var relative = Path.GetRelativePath(context.WorkspaceRoot, file).Replace('\\', '/');
                     results.Add($"{relative}:{lineNumber}: {rendered}");
                 }
             }
@@ -144,6 +173,70 @@ public sealed class GrepAgentTool(
                 ["matches"] = totalMatches.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["truncated"] = truncated.ToString().ToLowerInvariant(),
             });
+    }
+
+    public PermissionTargetResolution ResolvePermissionTarget(
+        JsonElement arguments,
+        AgentToolExecutionContext context)
+    {
+        GrepArguments input;
+        try
+        {
+            input = ToolArgumentReader.Deserialize<GrepArguments>(arguments);
+        }
+        catch (ArgumentException exception)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
+
+        if (string.IsNullOrWhiteSpace(input.Pattern))
+        {
+            return PermissionTargetResolution.Reject(
+                AgentToolResult.Failure("The grep tool requires a regular expression pattern."));
+        }
+
+        try
+        {
+            _ = new Regex(
+                input.Pattern,
+                RegexOptions.CultureInvariant |
+                (input.CaseSensitive == true ? RegexOptions.None : RegexOptions.IgnoreCase),
+                TimeSpan.FromSeconds(2));
+            if (!string.IsNullOrWhiteSpace(input.Include))
+            {
+                _ = GlobPattern.Create(input.Include);
+            }
+
+            var basePath = pathResolver.Resolve(context.WorkspaceRoot, input.BasePath);
+            if (!Directory.Exists(basePath) && !File.Exists(basePath))
+            {
+                return PermissionTargetResolution.Reject(
+                    AgentToolResult.Failure("The grep base path does not exist."));
+            }
+
+            var limit = Math.Min(input.MaxResults ?? options.MaxGrepResults, options.MaxGrepResults);
+            if (limit <= 0)
+            {
+                return PermissionTargetResolution.Reject(
+                    AgentToolResult.Failure("Grep maxResults must be greater than zero."));
+            }
+
+            var relativeBase = Path.GetRelativePath(context.WorkspaceRoot, basePath).Replace('\\', '/');
+            var include = string.IsNullOrWhiteSpace(input.Include)
+                ? "**"
+                : input.Include.Trim().Replace('\\', '/').TrimStart('/');
+            var target = relativeBase == "."
+                ? include
+                : $"{relativeBase}/{include}";
+            return PermissionTargetResolution.Success(
+                "search",
+                target,
+                $"Search workspace text within '{target}'.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
     }
 
     private static async Task<bool> IsBinaryAsync(string path, CancellationToken cancellationToken)

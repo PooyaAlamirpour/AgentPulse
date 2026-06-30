@@ -56,7 +56,12 @@ public sealed class ToolCallingRunPrompt(
                 prepared.UserMessage,
                 model));
             var loopResult = await agentLoop.ExecuteAsync(
-                new AgentLoopRequest(initialRequest.Messages, projectContext.ProjectRoot, model),
+                new AgentLoopRequest(
+                    initialRequest.Messages,
+                    projectContext.ProjectRoot,
+                    model,
+                    prepared.Session.Id,
+                    projectContext.ProjectId),
                 observer,
                 cancellationToken);
 

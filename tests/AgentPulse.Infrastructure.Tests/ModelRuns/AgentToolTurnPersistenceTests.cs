@@ -129,6 +129,75 @@ public sealed class AgentToolTurnPersistenceTests
             Assert.IsType<TextMessagePart>(Assert.Single(finalAssistant.Parts)).Text);
     }
 
+    [Fact]
+    public async Task Failed_unclassified_tool_result_preserves_call_id_and_error()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var clock = new FixedClock();
+        var factory = new TestDbContextFactory(database.Options);
+        var projectContext = new ProjectContext(
+            "/workspace/project",
+            "/workspace/project",
+            false,
+            null,
+            ProjectPlatform.Linux,
+            UtcNow.Date,
+            ProjectId.New());
+
+        PrepareSessionRunResult prepared;
+        await using (var preparationContext = database.CreateContext())
+        {
+            prepared = await CreatePrepare(preparationContext, clock).ExecuteAsync(
+                new PrepareSessionRunRequest(
+                    projectContext,
+                    null,
+                    "Run an unclassified tool",
+                    "test-model"));
+        }
+
+        var call = new ChatModelToolCall(
+            "call-unclassified-1",
+            "unclassified",
+            "{}",
+            1);
+        var response = new ChatModelResponse(
+            null,
+            [call],
+            ModelFinishReason.ToolCalls);
+        const string denial =
+            "Permission metadata is not defined for tool 'unclassified'. Execution was denied.";
+        var execution = new AgentLoopToolExecution(
+            call,
+            AgentToolResult.Failure(denial),
+            TimeSpan.Zero);
+        var persistence = new AgentToolTurnPersistence(
+            factory,
+            clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentToolTurnPersistence>.Instance);
+
+        await persistence.SaveAssistantToolCallsAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            "test-model",
+            response);
+        await persistence.SaveToolResultAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            execution);
+
+        await using var verification = database.CreateContext();
+        var persistedResult = await verification.MessageParts
+            .OfType<ToolResultMessagePart>()
+            .SingleAsync();
+
+        Assert.Equal(call.Id, persistedResult.ToolCallId);
+        Assert.Equal(call.Name, persistedResult.ToolName);
+        Assert.False(persistedResult.Succeeded);
+        Assert.Equal(string.Empty, persistedResult.Output);
+        Assert.Equal(denial, persistedResult.Error);
+    }
 
     [Fact]
     public async Task Same_tool_call_id_is_idempotent_per_session_not_global()

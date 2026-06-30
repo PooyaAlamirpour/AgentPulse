@@ -8,6 +8,13 @@ public sealed class AgentToolRegistry : IAgentToolRegistry
     private readonly IReadOnlyList<ChatModelToolDefinition> _definitions;
 
     public AgentToolRegistry(IEnumerable<IAgentTool> tools)
+        : this(tools, requirePermissionMetadata: false)
+    {
+    }
+
+    public AgentToolRegistry(
+        IEnumerable<IAgentTool> tools,
+        bool requirePermissionMetadata)
     {
         ArgumentNullException.ThrowIfNull(tools);
         var dictionary = new Dictionary<string, IAgentTool>(StringComparer.Ordinal);
@@ -15,6 +22,12 @@ public sealed class AgentToolRegistry : IAgentToolRegistry
         {
             ArgumentNullException.ThrowIfNull(tool);
             ArgumentException.ThrowIfNullOrWhiteSpace(tool.Name);
+            if (requirePermissionMetadata && tool is not IPermissionAwareAgentTool)
+            {
+                throw new InvalidOperationException(
+                    $"Permission metadata is not defined for agent tool '{tool.Name}'. Registration was denied.");
+            }
+
             if (!dictionary.TryAdd(tool.Name, tool))
             {
                 throw new InvalidOperationException(

@@ -2,6 +2,9 @@ using System.Diagnostics;
 using System.Text.Json;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
+using AgentPulse.Application.Permissions;
+using AgentPulse.Domain.Projects;
+using AgentPulse.Domain.Sessions;
 using Microsoft.Extensions.Logging;
 
 namespace AgentPulse.Application.AgentLoop;
@@ -10,7 +13,8 @@ public sealed class AgentLoop(
     IChatModelClient chatModelClient,
     IAgentToolRegistry toolRegistry,
     AgentToolOptions options,
-    ILogger<AgentLoop> logger) : IAgentLoop
+    ILogger<AgentLoop> logger,
+    IPermissionGate? permissionGate = null) : IAgentLoop
 {
     public async Task<AgentLoopResult> ExecuteAsync(
         AgentLoopRequest request,
@@ -82,7 +86,12 @@ public sealed class AgentLoop(
             var executions = new List<AgentLoopToolExecution>(response.ToolCalls.Count);
             foreach (var call in response.ToolCalls.OrderBy(static value => value.Order))
             {
-                var execution = await ExecuteToolAsync(call, context, cancellationToken);
+                var execution = await ExecuteToolAsync(
+                    call,
+                    context,
+                    request.SessionId,
+                    request.ProjectId,
+                    cancellationToken);
                 executions.Add(execution);
                 messages.Add(ChatModelMessage.CreateToolResult(
                     call.Id,
@@ -105,6 +114,8 @@ public sealed class AgentLoop(
     private async Task<AgentLoopToolExecution> ExecuteToolAsync(
         ChatModelToolCall call,
         AgentToolExecutionContext context,
+        SessionId? sessionId,
+        ProjectId? projectId,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -119,9 +130,46 @@ public sealed class AgentLoop(
             try
             {
                 using var document = JsonDocument.Parse(call.ArgumentsJson);
+                var executionContext = context;
+                if (permissionGate is not null)
+                {
+                    var authorizationContext = new PermissionAuthorizationContext();
+                    var authorization = await permissionGate.AuthorizeAsync(
+                        tool,
+                        document.RootElement,
+                        context,
+                        sessionId,
+                        projectId,
+                        authorizationContext,
+                        cancellationToken);
+                    if (!authorization.IsAllowed)
+                    {
+                        result = authorization.Failure ?? AgentToolResult.Failure(
+                            $"Permission denied for tool '{call.Name}'.");
+                        stopwatch.Stop();
+                        result = LimitOutput(result);
+                        logger.LogInformation(
+                            "Tool {ToolName} completed in {DurationMs} ms with success {Succeeded}.",
+                            call.Name,
+                            stopwatch.Elapsed.TotalMilliseconds,
+                            result.Succeeded);
+                        return new AgentLoopToolExecution(call, result, stopwatch.Elapsed);
+                    }
+
+                    executionContext = new AgentToolExecutionContext(
+                        context.WorkspaceRoot,
+                        new ResourcePermissionAuthorizer(
+                            permissionGate,
+                            tool,
+                            context,
+                            sessionId,
+                            projectId,
+                            authorizationContext));
+                }
+
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(options.ToolTimeout);
-                result = await tool.ExecuteAsync(document.RootElement, context, timeout.Token);
+                result = await tool.ExecuteAsync(document.RootElement, executionContext, timeout.Token);
             }
             catch (JsonException exception)
             {
@@ -183,5 +231,33 @@ public sealed class AgentLoop(
             error = result.Error,
             metadata = result.Metadata,
         });
+    }
+
+    private sealed class ResourcePermissionAuthorizer(
+        IPermissionGate permissionGate,
+        IAgentTool tool,
+        AgentToolExecutionContext toolContext,
+        SessionId? sessionId,
+        ProjectId? projectId,
+        PermissionAuthorizationContext authorizationContext)
+        : IAgentToolResourcePermissionAuthorizer
+    {
+        public Task<PermissionAuthorizationResult> AuthorizeAsync(
+            string operation,
+            string target,
+            string? description,
+            CancellationToken cancellationToken)
+        {
+            return permissionGate.AuthorizeResourceAsync(
+                tool,
+                operation,
+                target,
+                description,
+                toolContext,
+                sessionId,
+                projectId,
+                authorizationContext,
+                cancellationToken);
+        }
     }
 }

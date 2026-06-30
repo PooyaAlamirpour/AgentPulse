@@ -41,6 +41,25 @@ public sealed class AgentToolRegistryTests
         Assert.Equal(2, registry.GetDefinitions().Count);
     }
 
+    [Fact]
+    public void Strict_registration_rejects_tool_without_permission_metadata()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new AgentToolRegistry([new StubTool("unclassified")], requirePermissionMetadata: true));
+
+        Assert.Contains("Permission metadata is not defined", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Strict_registration_accepts_classified_tool()
+    {
+        var registry = new AgentToolRegistry(
+            [new ClassifiedStubTool("read")],
+            requirePermissionMetadata: true);
+
+        Assert.True(registry.TryGet("read", out _));
+    }
+
     private sealed class StubTool(string name) : IAgentTool
     {
         public string Name { get; } = name;
@@ -56,5 +75,23 @@ public sealed class AgentToolRegistryTests
         {
             return Task.FromResult(AgentToolResult.Success("ok"));
         }
+    }
+
+    private sealed class ClassifiedStubTool(string name) : IAgentTool, IPermissionAwareAgentTool
+    {
+        public string Name { get; } = name;
+
+        public string Description => "description";
+
+        public string ParametersJsonSchema => "{\"type\":\"object\"}";
+
+        public Task<AgentToolResult> ExecuteAsync(
+            JsonElement arguments,
+            AgentToolExecutionContext context,
+            CancellationToken cancellationToken) => Task.FromResult(AgentToolResult.Success("ok"));
+
+        public PermissionTargetResolution ResolvePermissionTarget(
+            JsonElement arguments,
+            AgentToolExecutionContext context) => PermissionTargetResolution.Success("read", "file.txt");
     }
 }

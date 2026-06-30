@@ -7,7 +7,7 @@ namespace AgentPulse.Infrastructure.AgentTools;
 
 public sealed class ReadAgentTool(
     IWorkspacePathResolver pathResolver,
-    AgentToolOptions options) : IAgentTool
+    AgentToolOptions options) : IAgentTool, IPermissionAwareAgentTool
 {
     public string Name => "read";
 
@@ -142,6 +142,57 @@ public sealed class ReadAgentTool(
                 ["lines"] = emitted.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["truncated"] = truncated.ToString().ToLowerInvariant(),
             });
+    }
+
+    public PermissionTargetResolution ResolvePermissionTarget(
+        JsonElement arguments,
+        AgentToolExecutionContext context)
+    {
+        ReadArguments input;
+        try
+        {
+            input = ToolArgumentReader.Deserialize<ReadArguments>(arguments);
+        }
+        catch (ArgumentException exception)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
+
+        if (string.IsNullOrWhiteSpace(input.Path))
+        {
+            return PermissionTargetResolution.Reject(
+                AgentToolResult.Failure("The read tool requires a non-empty path."));
+        }
+
+        var offset = input.Offset ?? 1;
+        var requestedLimit = input.Limit ?? options.MaxReadLines;
+        if (offset <= 0 || requestedLimit <= 0)
+        {
+            return PermissionTargetResolution.Reject(
+                AgentToolResult.Failure("Read offset and limit must be greater than zero."));
+        }
+
+        try
+        {
+            var path = pathResolver.Resolve(context.WorkspaceRoot, input.Path);
+            if (!File.Exists(path))
+            {
+                return PermissionTargetResolution.Reject(
+                    Directory.Exists(path)
+                        ? AgentToolResult.Failure("The requested read path is a directory, not a file.")
+                        : AgentToolResult.Failure("The requested file does not exist."));
+            }
+
+            var relative = Path.GetRelativePath(context.WorkspaceRoot, path).Replace('\\', '/');
+            return PermissionTargetResolution.Success(
+                "read",
+                relative,
+                $"Read workspace file '{relative}'.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
     }
 
     private sealed record ReadArguments(string? Path, int? Offset, int? Limit);

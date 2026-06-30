@@ -129,7 +129,10 @@ public static class DependencyInjection
         services.AddSingleton<IAgentTool, ReadAgentTool>();
         services.AddSingleton<IAgentTool, GlobAgentTool>();
         services.AddSingleton<IAgentTool, GrepAgentTool>();
-        services.AddSingleton<IAgentToolRegistry, AgentToolRegistry>();
+        services.AddSingleton<IAgentToolRegistry>(serviceProvider =>
+            new AgentToolRegistry(
+                serviceProvider.GetServices<IAgentTool>(),
+                requirePermissionMetadata: true));
         return services;
     }
 

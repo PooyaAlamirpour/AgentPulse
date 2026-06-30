@@ -16,6 +16,7 @@ Implemented in the current codebase:
 - Bounded agent loop with deterministic sequential execution of multiple tool calls
 - Persistent assistant tool-call messages, tool-result messages, and final assistant responses
 - Read-only `read`, `glob`, and `grep` tools restricted to the active workspace
+- Deterministic `Allow`, `Ask`, and `Deny` permission rules with once, session, and project approvals
 - Structured logging, cancellation propagation, tool timeouts, and stable CLI error mapping
 - Deterministic unit and integration tests that do not require a live model provider
 
@@ -210,6 +211,66 @@ export AgentPulse__Tools__MaxGrepResults=100
 
 `MaxOutputCharacters` is also enforced centrally by the agent loop, even when a tool applies a smaller internal limit.
 
+## Permission System
+
+AgentPulse evaluates `Allow`, `Ask`, and `Deny` rules immediately before a classified tool executes. Tool arguments and workspace paths are validated first, so an `Allow` decision never bypasses workspace boundaries, symbolic-link or junction protection, or existing read limits. Tools without explicit permission metadata are denied by default with a failed tool result instead of executing.
+
+`glob` and `grep` use two permission boundaries. The request-level check decides whether the search may start, and a resource-level check evaluates every canonical, workspace-relative candidate path before it is returned or, for `grep`, before its content is opened or read. Denied paths are excluded completely. Paths that require approval are included only after a compatible approval; an indeterminate resource decision fails closed.
+
+The current classified read-only tools remain backward compatible: when no explicit rule matches, `read`, `glob`, and `grep` use `DefaultDecision`, which is `Allow` by default inside the active workspace. A matching `Ask` rule opens an interactive approval prompt. The rule `Scope` is the maximum approval lifetime:
+
+- `Once`: `Allow once` or `Deny`
+- `Session`: `Allow once`, `Allow for this session`, or `Deny`
+- `Project`: all options, including `Always allow for this project`
+
+Scope is enforced in the permission core as well as the CLI. A prompt implementation cannot persist an approval that exceeds the matching rule scope. Session approvals are held only in memory for the matching session. Project approvals are stored atomically in the AgentPulse application-data directory and are isolated by deterministic project identity. `Scope` does not affect `Allow` or `Deny` rules; it is used only to bound approvals for `Ask` rules.
+
+A non-interactive run never waits for approval. An `Ask` decision becomes a failed tool result with the message `Permission approval is required, but the current run is non-interactive.` Explicit `Deny` always has priority and cannot be overridden by session or project approvals. Persisted approvals that are broader than the current rule scope are treated as stale and ignored.
+
+Permission settings live under `AgentPulse:Permissions`:
+
+```json
+{
+  "AgentPulse": {
+    "Permissions": {
+      "DefaultDecision": "Allow",
+      "Rules": [
+        {
+          "Tool": "grep",
+          "Operation": "search",
+          "Target": "restricted/one-time/**",
+          "Decision": "Ask",
+          "Scope": "Once"
+        },
+        {
+          "Tool": "grep",
+          "Operation": "search",
+          "Target": "restricted/session/**",
+          "Decision": "Ask",
+          "Scope": "Session"
+        },
+        {
+          "Tool": "glob",
+          "Operation": "search",
+          "Target": "restricted/project/**",
+          "Decision": "Ask",
+          "Scope": "Project"
+        },
+        {
+          "Tool": "*",
+          "Operation": "*",
+          "Target": "secrets/**",
+          "Decision": "Deny",
+          "Scope": "Project"
+        }
+      ]
+    }
+  }
+}
+```
+
+Rules support exact tool and operation names or `*`. Target matching supports exact workspace-relative paths plus limited `*` and `**` wildcards. Parent traversal, rooted targets, unsupported wildcard syntax, empty selectors, invalid scopes, and duplicate rules are rejected during startup. Resolution is deterministic: more specific tool and target matches win, and equally specific rules resolve in the safer order `Deny`, `Ask`, then `Allow`. Omitting `Scope` preserves the existing `Project` default.
+
 ## Adding a Tool
 
 A tool is independent of the CLI and model-provider SDK. Implement `IAgentTool` and register it with dependency injection:
@@ -299,7 +360,6 @@ The regular test suite uses fake model clients, local HTTP servers, temporary wo
 The following capabilities are not implemented in the current phase:
 
 - Write, edit, patch, shell, or Bash tools
-- A full permission/approval system
 - Plan and build modes
 - Subagents
 - Long-term memory, compaction, or context pruning

@@ -1,13 +1,18 @@
 using System.Text.Json;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.Workspaces;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AgentPulse.Infrastructure.AgentTools;
 
 public sealed class GlobAgentTool(
     IWorkspacePathResolver pathResolver,
-    AgentToolOptions options) : IAgentTool
+    AgentToolOptions options,
+    ILogger<GlobAgentTool>? logger = null) : IAgentTool, IPermissionAwareAgentTool
 {
+    private readonly ILogger<GlobAgentTool> _logger = logger ?? NullLogger<GlobAgentTool>.Instance;
+
     public string Name => "glob";
 
     public string Description =>
@@ -18,7 +23,7 @@ public sealed class GlobAgentTool(
         {"type":"object","properties":{"pattern":{"type":"string"},"basePath":{"type":"string"},"maxResults":{"type":"integer","minimum":1}},"required":["pattern"],"additionalProperties":false}
         """;
 
-    public Task<AgentToolResult> ExecuteAsync(
+    public async Task<AgentToolResult> ExecuteAsync(
         JsonElement arguments,
         AgentToolExecutionContext context,
         CancellationToken cancellationToken)
@@ -32,12 +37,12 @@ public sealed class GlobAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return Task.FromResult(AgentToolResult.Failure(exception.Message));
+            return AgentToolResult.Failure(exception.Message);
         }
 
         if (string.IsNullOrWhiteSpace(input.Pattern))
         {
-            return Task.FromResult(AgentToolResult.Failure("The glob tool requires a pattern."));
+            return AgentToolResult.Failure("The glob tool requires a pattern.");
         }
 
         GlobPattern matcher;
@@ -49,21 +54,21 @@ public sealed class GlobAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return Task.FromResult(AgentToolResult.Failure(exception.Message));
+            return AgentToolResult.Failure(exception.Message);
         }
 
         if (!Directory.Exists(basePath) && !File.Exists(basePath))
         {
-            return Task.FromResult(AgentToolResult.Failure("The glob base path does not exist."));
+            return AgentToolResult.Failure("The glob base path does not exist.");
         }
 
         var limit = Math.Min(input.MaxResults ?? options.MaxGlobResults, options.MaxGlobResults);
         if (limit <= 0)
         {
-            return Task.FromResult(AgentToolResult.Failure("Glob maxResults must be greater than zero."));
+            return AgentToolResult.Failure("Glob maxResults must be greater than zero.");
         }
 
-        var matches = WorkspaceFileEnumerator
+        var candidates = WorkspaceFileEnumerator
             .EnumerateFiles(basePath, cancellationToken)
             .Select(path => new
             {
@@ -77,22 +82,107 @@ public sealed class GlobAgentTool(
             .OrderBy(static value => value.RelativeToWorkspace, WorkspaceFileEnumerator.GetPathComparer())
             .ToArray();
 
-        var output = matches.Length == 0
-            ? "No files found."
-            : string.Join("\n", matches.Take(limit).Select(static value => value.RelativeToWorkspace));
-        var truncated = matches.Length > limit;
-        if (truncated)
+        var matches = new List<string>(Math.Min(candidates.Length, limit));
+        foreach (var candidate in candidates)
         {
-            output += $"\n\n[Results truncated: showing {limit} of {matches.Length} files.]";
+            cancellationToken.ThrowIfCancellationRequested();
+            var authorization = await context.AuthorizeResourceAsync(
+                "search",
+                candidate.RelativeToWorkspace,
+                $"Include workspace path '{candidate.RelativeToWorkspace}' in glob results.",
+                cancellationToken);
+            if (!authorization.IsAllowed)
+            {
+                if (authorization.IsExplicitlyDenied)
+                {
+                    _logger.LogInformation(
+                        "Resource excluded because of explicit deny for glob target {Target}.",
+                        candidate.RelativeToWorkspace);
+                    continue;
+                }
+
+                _logger.LogWarning(
+                    "Resource permission evaluation failed for glob target {Target}.",
+                    candidate.RelativeToWorkspace);
+                _logger.LogWarning(
+                    "Glob tool aborted because resource permission could not be resolved for target {Target}.",
+                    candidate.RelativeToWorkspace);
+                return authorization.Failure ?? AgentToolResult.Failure(
+                    $"Resource permission evaluation failed for '{candidate.RelativeToWorkspace}'.");
+            }
+
+            matches.Add(candidate.RelativeToWorkspace);
         }
 
-        return Task.FromResult(AgentToolResult.Success(
+        var output = matches.Count == 0
+            ? "No files found."
+            : string.Join("\n", matches.Take(limit));
+        var truncated = matches.Count > limit;
+        if (truncated)
+        {
+            output += $"\n\n[Results truncated: showing {limit} of {matches.Count} files.]";
+        }
+
+        return AgentToolResult.Success(
             output,
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["matches"] = matches.Length.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["matches"] = matches.Count.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["truncated"] = truncated.ToString().ToLowerInvariant(),
-            }));
+            });
+    }
+
+    public PermissionTargetResolution ResolvePermissionTarget(
+        JsonElement arguments,
+        AgentToolExecutionContext context)
+    {
+        GlobArguments input;
+        try
+        {
+            input = ToolArgumentReader.Deserialize<GlobArguments>(arguments);
+        }
+        catch (ArgumentException exception)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
+
+        if (string.IsNullOrWhiteSpace(input.Pattern))
+        {
+            return PermissionTargetResolution.Reject(
+                AgentToolResult.Failure("The glob tool requires a pattern."));
+        }
+
+        try
+        {
+            _ = GlobPattern.Create(input.Pattern);
+            var basePath = pathResolver.Resolve(context.WorkspaceRoot, input.BasePath);
+            if (!Directory.Exists(basePath) && !File.Exists(basePath))
+            {
+                return PermissionTargetResolution.Reject(
+                    AgentToolResult.Failure("The glob base path does not exist."));
+            }
+
+            var limit = Math.Min(input.MaxResults ?? options.MaxGlobResults, options.MaxGlobResults);
+            if (limit <= 0)
+            {
+                return PermissionTargetResolution.Reject(
+                    AgentToolResult.Failure("Glob maxResults must be greater than zero."));
+            }
+
+            var relativeBase = Path.GetRelativePath(context.WorkspaceRoot, basePath).Replace('\\', '/');
+            var normalizedPattern = input.Pattern.Trim().Replace('\\', '/').TrimStart('/');
+            var target = relativeBase == "."
+                ? normalizedPattern
+                : $"{relativeBase}/{normalizedPattern}";
+            return PermissionTargetResolution.Success(
+                "search",
+                target,
+                $"Search workspace files matching '{target}'.");
+        }
+        catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
+        {
+            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+        }
     }
 
     private sealed record GlobArguments(string? Pattern, string? BasePath, int? MaxResults);

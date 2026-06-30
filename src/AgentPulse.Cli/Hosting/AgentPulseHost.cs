@@ -4,17 +4,20 @@ using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.Processes;
+using AgentPulse.Application.Permissions;
 using AgentPulse.Application.ProjectContexts;
 using AgentPulse.Application.SessionRuns;
 using AgentPulse.Cli.Commands;
 using AgentPulse.Cli.Configuration;
 using AgentPulse.Cli.Console;
 using AgentPulse.Cli.Credentials;
+using AgentPulse.Cli.Permissions;
 using AgentPulse.Infrastructure;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
 using AgentPulse.Infrastructure.Persistence;
+using AgentPulse.Infrastructure.Permissions;
 using AgentPulse.Infrastructure.Processes;
 using AgentPulse.Infrastructure.ProjectContexts;
 using Microsoft.Extensions.Configuration;
@@ -101,6 +104,10 @@ public static class AgentPulseHost
         builder.Configuration.GetSection(AgentToolOptions.SectionName).Bind(agentToolOptions);
         agentToolOptions.Validate();
 
+        var permissionOptions = new PermissionOptions();
+        builder.Configuration.GetSection(PermissionOptions.SectionName).Bind(permissionOptions);
+        permissionOptions.Validate();
+
         RunLeaseOptionsValidator.Validate(sessionRunOptions, streamingRunOptions);
 
         var modelOptions = new OpenAiCompatibleModelOptions();
@@ -117,6 +124,7 @@ public static class AgentPulseHost
         builder.Services.AddSingleton(sessionRunOptions);
         builder.Services.AddSingleton(streamingRunOptions);
         builder.Services.AddSingleton(agentToolOptions);
+        builder.Services.AddSingleton(permissionOptions);
         builder.Services.AddSingleton(modelOptions);
         builder.Services.AddSingleton(new ChatModelRunDefaults(modelOptions.Model));
         builder.Services.AddSingleton(credentialScope);
@@ -146,6 +154,13 @@ public static class AgentPulseHost
         builder.Services.AddAgentPulseCredentialStore();
         builder.Services.AddOpenAiCompatibleModelProvider();
         builder.Services.AddAgentTools();
+        builder.Services.AddSingleton<IPermissionRuleEvaluator, PermissionRuleEvaluator>();
+        builder.Services.AddSingleton<ISessionPermissionStore, InMemorySessionPermissionStore>();
+        builder.Services.AddSingleton<IProjectPermissionStore>(
+            new JsonProjectPermissionStore(
+                Path.Combine(Path.GetDirectoryName(databasePath)!, "permissions")));
+        builder.Services.AddSingleton<IPermissionApprovalPrompt, CliPermissionApprovalPrompt>();
+        builder.Services.AddSingleton<IPermissionGate, PermissionGate>();
 
         builder.Services.AddScoped<IRegisterProject, RegisterProject>();
         builder.Services.AddScoped<ICreateSession, CreateSession>();

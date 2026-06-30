@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Infrastructure.AgentTools;
+using AgentPulse.Infrastructure.Tests.AgentTools;
 using AgentPulse.Infrastructure.Workspaces;
 
 namespace AgentPulse.Infrastructure.Tests.Workspaces;
@@ -38,7 +39,10 @@ public sealed class WorkspacePathResolverSecurityTests
     private static async Task<AgentToolResult> ExecuteAsync(IAgentTool tool, string root, string json)
     {
         using var document = JsonDocument.Parse(json);
-        return await tool.ExecuteAsync(document.RootElement, new AgentToolExecutionContext(root), CancellationToken.None);
+        return await tool.ExecuteAsync(
+            document.RootElement,
+            new AgentToolExecutionContext(root, new TestResourcePermissionAuthorizer()),
+            CancellationToken.None);
     }
 
     private sealed class TemporaryWorkspace : IDisposable
