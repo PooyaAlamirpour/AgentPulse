@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AgentPulse.Application.AgentLoop;
+using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRuns;
 using AgentPulse.Application.ProjectContexts;
@@ -16,7 +17,8 @@ namespace AgentPulse.Infrastructure.Persistence;
 public sealed class AgentToolTurnPersistence(
     IDbContextFactory<AgentPulseDbContext> dbContextFactory,
     IClock clock,
-    ILogger<AgentToolTurnPersistence> logger) : IAgentToolTurnPersistence
+    ILogger<AgentToolTurnPersistence> logger,
+    AgentToolOptions? toolOptions = null) : IAgentToolTurnPersistence
 {
     public async Task SaveAssistantToolCallsAsync(
         SessionId sessionId,
@@ -135,15 +137,26 @@ public sealed class AgentToolTurnPersistence(
             .Where(value => value.SessionId == sessionId)
             .MaxAsync(value => value.Sequence, cancellationToken);
         var toolMessage = new Message(MessageId.New(), sessionId, MessageRole.Tool, sequence + 1, utcNow);
+        var limit = AgentToolResultLimiter.Limit(
+            execution.Result,
+            (toolOptions ?? new AgentToolOptions()).MaxOutputCharacters);
+        if (limit.WasLimited)
+        {
+            logger.LogInformation(
+                "Tool result was limited before persistence for tool {ToolName}.",
+                execution.Call.Name);
+        }
+
+        var boundedResult = limit.Result;
         var metadataJson = JsonSerializer.Serialize(new
         {
             durationMs = execution.Duration.TotalMilliseconds,
-            values = execution.Result.Metadata,
+            values = boundedResult.Metadata,
         });
         toolMessage.AddToolResultPart(
             MessagePartId.New(), sessionId, assistantToolCallMessageId, 1,
             execution.Call.Id, execution.Call.Name,
-            execution.Result.Succeeded, execution.Result.Output, execution.Result.Error, metadataJson, utcNow);
+            boundedResult.Succeeded, boundedResult.Output, boundedResult.Error, metadataJson, utcNow);
         toolMessage.Complete(utcNow);
         await dbContext.Messages.AddAsync(toolMessage, cancellationToken);
 

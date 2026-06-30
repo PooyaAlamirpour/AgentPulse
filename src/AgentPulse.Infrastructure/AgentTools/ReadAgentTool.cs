@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.Workspaces;
+using AgentPulse.Infrastructure.Mutations;
 
 namespace AgentPulse.Infrastructure.AgentTools;
 
@@ -73,18 +74,19 @@ public sealed class ReadAgentTool(
                 $"The requested file is {fileLength} bytes and exceeds the maximum readable size of {options.MaxReadableFileBytes} bytes.");
         }
 
+        var exactBytes = await File.ReadAllBytesAsync(path, cancellationToken);
+        if (exactBytes.LongLength > options.MaxReadableFileBytes)
+        {
+            return DeterministicFailure(
+                $"The requested file changed while it was being read and now exceeds the maximum readable size of {options.MaxReadableFileBytes} bytes.");
+        }
+
         var builder = new StringBuilder(Math.Min(options.MaxOutputCharacters, 4096));
         var lineNumber = 0;
         var emitted = 0;
         var truncated = false;
 
-        await using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.ReadWrite | FileShare.Delete,
-            4096,
-            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var stream = new MemoryStream(exactBytes, writable: false);
         using var reader = new StreamReader(
             stream,
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false),
@@ -141,6 +143,9 @@ public sealed class ReadAgentTool(
                 ["offset"] = offset.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["lines"] = emitted.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 ["truncated"] = truncated.ToString().ToLowerInvariant(),
+                ["sha256"] = TextFileCodec.ComputeSha256(exactBytes),
+                ["encoding"] = TextFileCodec.DescribeEncoding(exactBytes),
+                ["lineEnding"] = TextFileCodec.DescribeLineEnding(exactBytes),
             });
     }
 

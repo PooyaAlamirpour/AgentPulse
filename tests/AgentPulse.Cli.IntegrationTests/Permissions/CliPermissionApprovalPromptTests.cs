@@ -30,6 +30,34 @@ public sealed class CliPermissionApprovalPromptTests
     }
 
     [Fact]
+    public async Task Mutation_description_is_displayed_before_the_choices()
+    {
+        var console = new TestConsole("4\n");
+        var prompt = new CliPermissionApprovalPrompt(
+            console,
+            NullLogger<CliPermissionApprovalPrompt>.Instance);
+        var request = new PermissionRequest(
+            "edit",
+            "edit",
+            "src/Program.cs",
+            Directory.GetCurrentDirectory(),
+            SessionId.New(),
+            ProjectId.New(),
+            isInteractive: true,
+            description: "Proposed changes:\n--- a/src/Program.cs\n+++ b/src/Program.cs");
+
+        var result = await prompt.RequestApprovalAsync(request, CancellationToken.None);
+        var output = console.StandardError.ToString();
+
+        Assert.Equal(PermissionApprovalChoice.Deny, result);
+        Assert.Contains("Proposed changes:", output, StringComparison.Ordinal);
+        Assert.Contains("--- a/src/Program.cs", output, StringComparison.Ordinal);
+        Assert.True(
+            output.IndexOf("Proposed changes:", StringComparison.Ordinal) <
+            output.IndexOf("Choose an action:", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Invalid_and_empty_input_retry_without_allowing()
     {
         var console = new TestConsole("\ninvalid\n4\n");

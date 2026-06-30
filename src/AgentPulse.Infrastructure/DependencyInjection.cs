@@ -6,6 +6,7 @@ using AgentPulse.Application.Persistence;
 using AgentPulse.Infrastructure.AgentTools;
 using AgentPulse.Infrastructure.Credentials;
 using AgentPulse.Infrastructure.ModelProviders.OpenAiCompatible;
+using AgentPulse.Infrastructure.Mutations;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
 using AgentPulse.Infrastructure.Workspaces;
@@ -13,6 +14,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 
 namespace AgentPulse.Infrastructure;
 
@@ -125,10 +127,45 @@ public static class DependencyInjection
     public static IServiceCollection AddAgentTools(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
+        services.TryAddSingleton(new MutationToolOptions());
         services.AddSingleton<IWorkspacePathResolver, WorkspacePathResolver>();
+        services.AddSingleton<IProtectedPathPolicy>(serviceProvider =>
+            new ProtectedPathPolicy(
+                serviceProvider.GetRequiredService<IWorkspacePathResolver>(),
+                serviceProvider.GetRequiredService<MutationToolOptions>(),
+                serviceProvider.GetRequiredService<ILogger<ProtectedPathPolicy>>()));
+        services.AddSingleton<IUnifiedDiffGenerator>(serviceProvider =>
+            new UnifiedDiffGenerator(
+                serviceProvider.GetRequiredService<MutationToolOptions>()));
+        services.AddSingleton<IPathLockManager>(_ => new PathLockManager());
+        services.AddSingleton<IMutationFileSystem>(_ => new SystemMutationFileSystem());
+        services.AddSingleton<IApplyPatchParser>(serviceProvider =>
+            new ApplyPatchParser(
+                serviceProvider.GetRequiredService<MutationToolOptions>()));
+        services.AddSingleton<IWorkspaceMutationService>(serviceProvider =>
+            new WorkspaceMutationService(
+                serviceProvider.GetRequiredService<IProtectedPathPolicy>(),
+                serviceProvider.GetRequiredService<IUnifiedDiffGenerator>(),
+                serviceProvider.GetRequiredService<IPathLockManager>(),
+                serviceProvider.GetRequiredService<IMutationFileSystem>(),
+                serviceProvider.GetRequiredService<MutationToolOptions>(),
+                serviceProvider.GetRequiredService<ILogger<WorkspaceMutationService>>()));
         services.AddSingleton<IAgentTool, ReadAgentTool>();
         services.AddSingleton<IAgentTool, GlobAgentTool>();
         services.AddSingleton<IAgentTool, GrepAgentTool>();
+        services.AddSingleton<IAgentTool>(serviceProvider =>
+            new WriteAgentTool(
+                serviceProvider.GetRequiredService<IWorkspaceMutationService>()));
+        services.AddSingleton<IAgentTool>(serviceProvider =>
+            new EditAgentTool(
+                serviceProvider.GetRequiredService<IWorkspaceMutationService>()));
+        services.AddSingleton<IAgentTool>(serviceProvider =>
+            new MultiEditAgentTool(
+                serviceProvider.GetRequiredService<IWorkspaceMutationService>()));
+        services.AddSingleton<IAgentTool>(serviceProvider =>
+            new ApplyPatchAgentTool(
+                serviceProvider.GetRequiredService<IApplyPatchParser>(),
+                serviceProvider.GetRequiredService<IWorkspaceMutationService>()));
         services.AddSingleton<IAgentToolRegistry>(serviceProvider =>
             new AgentToolRegistry(
                 serviceProvider.GetServices<IAgentTool>(),

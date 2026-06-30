@@ -48,6 +48,9 @@ public sealed class CliPermissionApprovalPrompt(
         var options = string.Join(
             Environment.NewLine,
             choices.Select(static choice => $"  [{choice.Key}] {GetLabel(choice.Value)}"));
+        var description = request.Description is null
+            ? string.Empty
+            : $"{Environment.NewLine}{request.Description}{Environment.NewLine}";
         var prompt = $"""
 
 Permission required
@@ -55,7 +58,7 @@ Permission required
 Tool: {request.ToolName}
 Operation: {request.Operation}
 Target: {request.Target}
-
+{description}
 Choose an action:
 {options}
 

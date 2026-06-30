@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AgentPulse.Application.AgentLoop;
 using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
@@ -9,8 +10,11 @@ using AgentPulse.Domain.Projects;
 using AgentPulse.Domain.Sessions;
 using AgentPulse.Infrastructure.Persistence;
 using AgentPulse.Infrastructure.Persistence.Repositories;
+using AgentPulse.Infrastructure.AgentTools;
+using AgentPulse.Infrastructure.Tests.Mutations;
 using AgentPulse.Infrastructure.Tests.Persistence;
 using Microsoft.EntityFrameworkCore;
+using static AgentPulse.Infrastructure.Tests.Mutations.MutationTestSupport;
 
 namespace AgentPulse.Infrastructure.Tests.ModelRuns;
 
@@ -200,6 +204,94 @@ public sealed class AgentToolTurnPersistenceTests
     }
 
     [Fact]
+    public async Task Existing_file_write_without_hash_persists_complete_failed_tool_turn()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        using var workspace = new TemporaryWorkspace();
+        var path = workspace.PathOf("notes/existing.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await File.WriteAllTextAsync(path, "ORIGINAL_CONTENT");
+        var before = await File.ReadAllBytesAsync(path);
+        var clock = new FixedClock();
+        var factory = new TestDbContextFactory(database.Options);
+        var projectContext = new ProjectContext(
+            workspace.Root,
+            workspace.Root,
+            false,
+            null,
+            ProjectPlatform.Linux,
+            UtcNow.Date,
+            ProjectId.New());
+
+        PrepareSessionRunResult prepared;
+        await using (var preparationContext = database.CreateContext())
+        {
+            prepared = await CreatePrepare(preparationContext, clock).ExecuteAsync(
+                new PrepareSessionRunRequest(
+                    projectContext,
+                    null,
+                    "Overwrite notes/existing.txt",
+                    "test-model"));
+        }
+
+        const string arguments =
+            "{\"path\":\"notes/existing.txt\",\"content\":\"OVERWRITTEN_CONTENT\"}";
+        var call = new ChatModelToolCall(
+            "call-write-missing-hash",
+            "write",
+            arguments,
+            1);
+        var response = new ChatModelResponse(
+            null,
+            [call],
+            ModelFinishReason.ToolCalls);
+        var toolResult = await ExecuteAsync(
+            new WriteAgentTool(CreateService()),
+            workspace.Root,
+            arguments);
+        var execution = new AgentLoopToolExecution(call, toolResult, TimeSpan.Zero);
+        var persistence = new AgentToolTurnPersistence(
+            factory,
+            clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentToolTurnPersistence>.Instance);
+
+        await persistence.SaveAssistantToolCallsAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            "test-model",
+            response);
+        await persistence.SaveToolResultAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            execution);
+
+        Assert.Equal(before, await File.ReadAllBytesAsync(path));
+        Assert.False(toolResult.Succeeded);
+        Assert.Equal(AgentToolFailureClassification.Deterministic, toolResult.FailureClassification);
+        Assert.Contains("expected SHA-256", toolResult.Error, StringComparison.Ordinal);
+
+        await using var verification = database.CreateContext();
+        var assistantCall = await verification.MessageParts
+            .OfType<ToolCallMessagePart>()
+            .SingleAsync();
+        var persistedResult = await verification.MessageParts
+            .OfType<ToolResultMessagePart>()
+            .SingleAsync();
+
+        Assert.Equal(call.Id, assistantCall.ToolCallId);
+        Assert.Equal(call.Name, assistantCall.ToolName);
+        Assert.Equal(arguments, assistantCall.ArgumentsJson);
+        Assert.Equal(call.Id, persistedResult.ToolCallId);
+        Assert.Equal(call.Name, persistedResult.ToolName);
+        Assert.False(persistedResult.Succeeded);
+        Assert.Equal(string.Empty, persistedResult.Output);
+        Assert.Contains("expected SHA-256", persistedResult.Error, StringComparison.Ordinal);
+        AssertNoMutationArtifacts(workspace.Root);
+    }
+
+    [Fact]
     public async Task Same_tool_call_id_is_idempotent_per_session_not_global()
     {
         await using var database = await SqliteTestDatabase.CreateAsync();
@@ -322,6 +414,76 @@ public sealed class AgentToolTurnPersistenceTests
 
         await using var verification = database.CreateContext();
         Assert.Empty(await verification.MessageParts.OfType<ToolResultMessagePart>().ToArrayAsync());
+    }
+
+    [Fact]
+    public async Task Oversized_mutation_result_is_bounded_before_persistence()
+    {
+        await using var database = await SqliteTestDatabase.CreateAsync();
+        var clock = new FixedClock();
+        var factory = new TestDbContextFactory(database.Options);
+        PrepareSessionRunResult prepared;
+        await using (var context = database.CreateContext())
+        {
+            prepared = await CreatePrepare(context, clock).ExecuteAsync(new PrepareSessionRunRequest(
+                new ProjectContext(
+                    "/workspace/project",
+                    "/workspace/project",
+                    false,
+                    null,
+                    ProjectPlatform.Linux,
+                    UtcNow.Date,
+                    ProjectId.New()),
+                null,
+                "large mutation",
+                "test-model"));
+        }
+
+        var call = new ChatModelToolCall("call-large", "write", "{}", 1);
+        var persistence = new AgentToolTurnPersistence(
+            factory,
+            clock,
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<AgentToolTurnPersistence>.Instance,
+            new AgentToolOptions { MaxOutputCharacters = 512 });
+        await persistence.SaveAssistantToolCallsAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            "test-model",
+            new ChatModelResponse(null, [call], ModelFinishReason.ToolCalls));
+        var result = AgentToolResult.Success(
+            new string('o', 2_000),
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["paths"] = "[\"large.txt\"]",
+                ["additions"] = "1000",
+                ["deletions"] = "0",
+                ["diff"] = new string('d', 10_000),
+            });
+
+        await persistence.SaveToolResultAsync(
+            prepared.Session.Id,
+            prepared.AssistantMessage.Id,
+            prepared.RunLease.LeaseId,
+            new AgentLoopToolExecution(call, result, TimeSpan.Zero));
+
+        await using var verification = database.CreateContext();
+        var persisted = await verification.MessageParts
+            .OfType<ToolResultMessagePart>()
+            .SingleAsync();
+        using var metadata = JsonDocument.Parse(persisted.MetadataJson!);
+        var values = metadata.RootElement.GetProperty("values")
+            .EnumerateObject()
+            .ToDictionary(
+                static property => property.Name,
+                static property => property.Value.GetString() ?? string.Empty,
+                StringComparer.Ordinal);
+        var persistedResult = AgentToolResult.Success(persisted.Output, values);
+
+        Assert.True(AgentToolResultLimiter.CalculateSize(persistedResult) <= 512);
+        Assert.Equal("true", values["diffTruncated"]);
+        Assert.Equal("10000", values["diffCharacterCount"]);
+        Assert.DoesNotContain(new string('d', 256), persisted.MetadataJson, StringComparison.Ordinal);
     }
 
     private static PrepareSessionRun CreatePrepare(

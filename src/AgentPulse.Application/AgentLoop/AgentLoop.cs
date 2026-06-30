@@ -155,31 +155,35 @@ public sealed class AgentLoop(
             {
                 using var document = JsonDocument.Parse(call.ArgumentsJson);
                 var executionContext = context;
+                var deferredPermissionTool = tool as IDeferredPermissionAgentTool;
                 if (permissionGate is not null)
                 {
                     var authorizationContext = new PermissionAuthorizationContext();
-                    var authorization = await permissionGate.AuthorizeAsync(
-                        tool,
-                        document.RootElement,
-                        context,
-                        sessionId,
-                        projectId,
-                        authorizationContext,
-                        cancellationToken);
-                    if (!authorization.IsAllowed)
+                    if (deferredPermissionTool is null)
                     {
-                        result = ClassifyPermissionFailure(
-                            authorization,
+                        var authorization = await permissionGate.AuthorizeAsync(
                             tool,
-                            call.Name);
-                        stopwatch.Stop();
-                        result = LimitOutput(result);
-                        logger.LogInformation(
-                            "Tool {ToolName} completed in {DurationMs} ms with success {Succeeded}.",
-                            call.Name,
-                            stopwatch.Elapsed.TotalMilliseconds,
-                            result.Succeeded);
-                        return new AgentLoopToolExecution(call, result, stopwatch.Elapsed);
+                            document.RootElement,
+                            context,
+                            sessionId,
+                            projectId,
+                            authorizationContext,
+                            cancellationToken);
+                        if (!authorization.IsAllowed)
+                        {
+                            result = ClassifyPermissionFailure(
+                                authorization,
+                                tool,
+                                call.Name);
+                            stopwatch.Stop();
+                            result = LimitOutput(result);
+                            logger.LogInformation(
+                                "Tool {ToolName} completed in {DurationMs} ms with success {Succeeded}.",
+                                call.Name,
+                                stopwatch.Elapsed.TotalMilliseconds,
+                                result.Succeeded);
+                            return new AgentLoopToolExecution(call, result, stopwatch.Elapsed);
+                        }
                     }
 
                     executionContext = new AgentToolExecutionContext(
@@ -195,7 +199,31 @@ public sealed class AgentLoop(
 
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                 timeout.CancelAfter(options.ToolTimeout);
-                result = await tool.ExecuteAsync(document.RootElement, executionContext, timeout.Token);
+                if (deferredPermissionTool is not null)
+                {
+                    var contract = deferredPermissionTool.DeferredPermissionContract;
+                    if (contract is null)
+                    {
+                        logger.LogWarning(
+                            "Deferred permission runtime guard denied execution for tool {ToolName}.",
+                            tool.Name);
+                        result = AgentToolResult.Failure(
+                            $"Deferred permission authorization is not configured for tool '{tool.Name}'. Execution was denied.",
+                            classification: AgentToolFailureClassification.Deterministic);
+                    }
+                    else
+                    {
+                        result = await contract.ExecuteAsync(
+                            tool,
+                            document.RootElement,
+                            executionContext,
+                            timeout.Token);
+                    }
+                }
+                else
+                {
+                    result = await tool.ExecuteAsync(document.RootElement, executionContext, timeout.Token);
+                }
             }
             catch (JsonException exception)
             {
@@ -263,26 +291,20 @@ public sealed class AgentLoop(
 
     private AgentToolResult LimitOutput(AgentToolResult result)
     {
-        if (result.Output.Length <= options.MaxOutputCharacters)
+        var outcome = AgentToolResultLimiter.Limit(result, options.MaxOutputCharacters);
+        if (outcome.MetadataWasTruncated)
         {
-            return result;
+            logger.LogInformation("Tool result metadata truncated before model delivery.");
         }
 
-        var suffix = $"\n\n[Output truncated at {options.MaxOutputCharacters} characters.]";
-        var available = Math.Max(0, options.MaxOutputCharacters - suffix.Length);
-        var output = result.Output[..available] + suffix;
-        var metadata = new Dictionary<string, string>(result.Metadata, StringComparer.Ordinal)
+        if (outcome.OutputWasTruncated &&
+            outcome.Result.Metadata.TryGetValue("diffTruncated", out var diffTruncated) &&
+            string.Equals(diffTruncated, "true", StringComparison.Ordinal))
         {
-            ["truncated"] = "true",
-        };
+            logger.LogInformation("Mutation output diff truncated before model delivery.");
+        }
 
-        return result.Succeeded
-            ? AgentToolResult.Success(output, metadata)
-            : AgentToolResult.Failure(
-                result.Error ?? "Tool failed.",
-                output,
-                metadata,
-                result.FailureClassification);
+        return outcome.Result;
     }
 
     private static string SerializeToolResult(AgentToolResult result)

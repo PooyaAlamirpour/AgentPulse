@@ -104,6 +104,10 @@ public static class AgentPulseHost
         builder.Configuration.GetSection(AgentToolOptions.SectionName).Bind(agentToolOptions);
         agentToolOptions.Validate();
 
+        var mutationToolOptions = new MutationToolOptions();
+        builder.Configuration.GetSection(MutationToolOptions.SectionName).Bind(mutationToolOptions);
+        mutationToolOptions.Validate();
+
         var permissionOptions = new PermissionOptions();
         builder.Configuration.GetSection(PermissionOptions.SectionName).Bind(permissionOptions);
         permissionOptions.Validate();
@@ -124,6 +128,7 @@ public static class AgentPulseHost
         builder.Services.AddSingleton(sessionRunOptions);
         builder.Services.AddSingleton(streamingRunOptions);
         builder.Services.AddSingleton(agentToolOptions);
+        builder.Services.AddSingleton(mutationToolOptions);
         builder.Services.AddSingleton(permissionOptions);
         builder.Services.AddSingleton(modelOptions);
         builder.Services.AddSingleton(new ChatModelRunDefaults(modelOptions.Model));

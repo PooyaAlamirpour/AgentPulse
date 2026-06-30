@@ -69,6 +69,7 @@ public sealed class PermissionGate(
             sessionId,
             projectId,
             authorizationContext,
+            ResolveDefaultDecision(tool),
             isResourceLevel: false,
             cancellationToken);
     }
@@ -102,6 +103,7 @@ public sealed class PermissionGate(
             sessionId,
             projectId,
             authorizationContext,
+            ResolveDefaultDecision(tool),
             isResourceLevel: true,
             cancellationToken);
     }
@@ -115,6 +117,7 @@ public sealed class PermissionGate(
         SessionId? sessionId,
         ProjectId? projectId,
         PermissionAuthorizationContext authorizationContext,
+        PermissionDecision defaultDecision,
         bool isResourceLevel,
         CancellationToken cancellationToken)
     {
@@ -150,7 +153,7 @@ public sealed class PermissionGate(
         PermissionEvaluationResult evaluation;
         try
         {
-            evaluation = evaluator.Evaluate(request, _rules, _defaultDecision);
+            evaluation = evaluator.Evaluate(request, _rules, defaultDecision);
         }
         catch (Exception exception)
         {
@@ -470,6 +473,13 @@ public sealed class PermissionGate(
                         "The permission approval response is invalid. Execution was denied."),
                     status: PermissionAuthorizationStatus.InvalidApproval);
         }
+    }
+
+    private PermissionDecision ResolveDefaultDecision(IAgentTool tool)
+    {
+        return tool is IAgentToolDefaultPermission toolDefault
+            ? toolDefault.DefaultPermissionDecision
+            : _defaultDecision;
     }
 
     private PermissionAuthorizationResult UnclassifiedTool(string toolName)

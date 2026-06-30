@@ -28,6 +28,13 @@ public sealed class AgentToolRegistry : IAgentToolRegistry
                     $"Permission metadata is not defined for agent tool '{tool.Name}'. Registration was denied.");
             }
 
+            if (tool is IDeferredPermissionAgentTool deferredPermissionTool &&
+                deferredPermissionTool.DeferredPermissionContract is null)
+            {
+                throw new InvalidOperationException(
+                    $"Deferred permission authorization is not configured for tool '{tool.Name}'. Registration was denied.");
+            }
+
             if (!dictionary.TryAdd(tool.Name, tool))
             {
                 throw new InvalidOperationException(

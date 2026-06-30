@@ -1,4 +1,6 @@
 using System.Reflection;
+using System.Text.Json;
+using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ChatModels;
 using AgentPulse.Application.ModelRequests;
 using AgentPulse.Application.ProjectContexts;
@@ -823,6 +825,76 @@ public sealed class ChatModelRequestBuilderTests
         Assert.DoesNotContain(request.Messages, message => message.ToolCalls.Any(call => call.Id == "call-b1"));
         Assert.DoesNotContain(request.Messages, message => message.ToolCallId == "call-b1");
         Assert.Contains(request.Messages, static message => message.Content == "done");
+    }
+
+    [Fact]
+    public void Oversized_historical_tool_metadata_is_limited_before_model_delivery()
+    {
+        var firstUser = CreateMessage(
+            SessionId,
+            MessageRole.User,
+            1,
+            MessageStatus.Completed,
+            "start");
+        var assistant = CreateToolCallMessage(2, ("call-1", "apply_patch"));
+        var metadataJson = JsonSerializer.Serialize(new
+        {
+            durationMs = 1,
+            values = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["paths"] = "[\"large.txt\"]",
+                ["additions"] = "1000",
+                ["deletions"] = "500",
+                ["diff"] = new string('d', 10_000),
+            },
+        });
+        var tool = new Message(MessageId.New(), SessionId, MessageRole.Tool, 3, UtcDate);
+        tool.AddToolResultPart(
+            MessagePartId.New(),
+            SessionId,
+            assistant.Id,
+            1,
+            "call-1",
+            "apply_patch",
+            true,
+            "ok",
+            null,
+            metadataJson,
+            UtcDate);
+        tool.Complete(UtcDate);
+        var currentUser = CreateMessage(
+            SessionId,
+            MessageRole.User,
+            4,
+            MessageStatus.Completed,
+            "continue");
+        var builder = new ChatModelRequestBuilder(
+            new ChatModelHistoryPolicy(),
+            toolOptions: new AgentToolOptions { MaxOutputCharacters = 512 });
+
+        var request = builder.Build(new ChatModelRequestBuildInput(
+            CreateProjectContext(),
+            [firstUser, assistant, tool],
+            currentUser));
+
+        var toolRequest = Assert.Single(
+            request.Messages,
+            static message => message.Role == ChatModelRole.Tool);
+        Assert.DoesNotContain(new string('d', 256), toolRequest.Content, StringComparison.Ordinal);
+        using var document = JsonDocument.Parse(toolRequest.Content!);
+        var values = document.RootElement.GetProperty("metadata").GetProperty("values");
+        Assert.Equal("true", values.GetProperty("diffTruncated").GetString());
+        Assert.Equal("10000", values.GetProperty("diffCharacterCount").GetString());
+        Assert.Equal("1000", values.GetProperty("additions").GetString());
+        Assert.Equal("500", values.GetProperty("deletions").GetString());
+        var boundedValues = values.EnumerateObject().ToDictionary(
+            static property => property.Name,
+            static property => property.Value.GetString() ?? string.Empty,
+            StringComparer.Ordinal);
+        var boundedResult = AgentToolResult.Success(
+            document.RootElement.GetProperty("output").GetString() ?? string.Empty,
+            boundedValues);
+        Assert.True(AgentToolResultLimiter.CalculateSize(boundedResult) <= 512);
     }
 
     private static Message CreateToolCallMessage(

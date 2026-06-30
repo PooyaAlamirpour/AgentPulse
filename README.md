@@ -59,6 +59,19 @@ Override the configured model for one request:
 dotnet run --project src/AgentPulse.Cli -- run --model <model-name> "Inspect the solution"
 ```
 
+```bash
+$env:MIMO_API_KEY="{YOUR_API_KEY}"
+$env:AgentPulse__Model__BaseUrl="https://api.xiaomimimo.com/v1"
+$env:AgentPulse__Model__ChatCompletionsPath="chat/completions"
+$env:AgentPulse__Model__Model="mimo-v2.5-pro"
+$env:AgentPulse__Model__AuthenticationMode="ApiKeyHeader"
+$env:AgentPulse__Model__ApiKeyHeaderName="api-key"
+$env:AgentPulse__Model__ApiKeyEnvironmentVariable="MIMO_API_KEY"
+$env:AgentPulse__Model__ThinkingMode="disabled"
+$env:AgentPulse__Model__IncludeThinkingConfiguration="true"
+```
+
+
 The prompt can also be supplied through redirected standard input. `Ctrl+C` cancels the active provider/tool operation and the CLI returns exit code `130`.
 
 ## Model Configuration
@@ -340,6 +353,52 @@ The solution follows one-way Clean Architecture dependencies:
 
 Provider DTOs remain inside Infrastructure. Domain and Application models do not reference an external provider SDK.
 
+## Safe file mutation tools
+
+AgentPulse provides four workspace-scoped text mutation tools:
+
+- `write` creates a new file or replaces a complete existing file. Creating a new file does not require `expected_sha256`. Overwriting an existing file requires `expected_sha256`, calculated from the file's exact current bytes.
+- `edit` performs one exact, non-regex replacement. A non-`replace_all` edit fails when the text is missing or ambiguous.
+- `multi_edit` applies an ordered list of exact replacements to one staged file and commits only after every edit succeeds.
+- `apply_patch` applies a strict, atomic multi-file patch.
+
+Example existing-file overwrite:
+
+```json
+{
+  "path": "src/Example.cs",
+  "content": "...",
+  "expected_sha256": "64-character SHA-256 value"
+}
+```
+
+Mutation tools default to `Ask` when no permission rule matches; the existing default behavior for `read`, `glob`, and `grep` is unchanged. Permission approval displays a bounded unified-diff preview before any workspace file is changed. `.git`, `bin`, `obj`, `.vs`, `TestResults`, and `artifacts` paths are always protected, including through path traversal or workspace-escaping links.
+
+Writes are staged on the destination filesystem, revalidated with SHA-256 optimistic concurrency, and committed atomically. Multi-file patches acquire path locks in canonical order and roll back created, updated, deleted, or moved files if a later commit fails. Existing UTF-8/UTF-16 BOMs, attributes, and Unix modes are preserved where supported; new files use UTF-8 without a BOM. Existing files preserve untouched line terminators exactly, so mixed line endings are not normalized globally by `edit`, `multi_edit`, or `apply_patch`.
+
+Large mutation diffs are truncated before persistence and model delivery. Tool-result budgeting includes output, errors, metadata keys, and metadata values, so a full diff cannot bypass the configured limit through metadata. Deferred-permission tools must expose an explicit execution contract; registration and runtime execution both fail closed when that contract is missing.
+
+Example patch:
+
+```text
+*** Begin Patch
+*** Add File: src/NewFile.cs
++namespace Example;
++
++public sealed class NewFile;
+*** Update File: src/Existing.cs
+@@
+-old value
++new value
+*** Delete File: src/Obsolete.cs
+*** Update File: src/OldName.cs
+*** Move to: src/NewName.cs
+@@
+-old name
++new name
+*** End Patch
+```
+
 ## Build and Test
 
 Build the complete solution with warnings treated as errors:
@@ -361,7 +420,7 @@ The regular test suite uses fake model clients, local HTTP servers, temporary wo
 
 The following capabilities are not implemented in the current phase:
 
-- Write, edit, patch, shell, or Bash tools
+- Shell or Bash tools
 - Plan and build modes
 - Subagents
 - Long-term memory, compaction, or context pruning

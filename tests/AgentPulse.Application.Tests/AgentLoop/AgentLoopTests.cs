@@ -492,6 +492,34 @@ public sealed class AgentLoopTests
     }
 
     [Fact]
+    public async Task Deferred_permission_runtime_guard_denies_missing_contract_without_executing_tool()
+    {
+        var tool = new MissingDeferredContractTool();
+        var observer = new RecordingObserver();
+        var loop = new AgentPulse.Application.AgentLoop.AgentLoop(
+            new ScriptedClient(
+                ToolResponse("call-deferred", "deferred", "{}"),
+                FinalResponse("recovered")),
+            new BypassRegistry(tool),
+            new AgentToolOptions { ToolTimeout = TimeSpan.FromSeconds(5) },
+            NullLogger<AgentPulse.Application.AgentLoop.AgentLoop>.Instance);
+
+        var response = await loop.ExecuteAsync(
+            new AgentLoopRequest(InitialMessages, Directory.GetCurrentDirectory()),
+            observer);
+
+        Assert.Equal("recovered", response.Text);
+        Assert.Equal(0, tool.ExecutionCount);
+        var execution = Assert.Single(Assert.Single(observer.ToolTurns));
+        Assert.False(execution.Result.Succeeded);
+        Assert.Equal(AgentToolFailureClassification.Deterministic, execution.Result.FailureClassification);
+        Assert.Contains(
+            "Deferred permission authorization is not configured",
+            execution.Result.Error,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Empty_model_response_is_rejected()
     {
         var client = new ScriptedClient(new ChatModelResponse(
@@ -558,6 +586,39 @@ public sealed class AgentLoopTests
             await Task.Yield();
             yield break;
         }
+    }
+
+    private sealed class MissingDeferredContractTool : IAgentTool, IDeferredPermissionAgentTool
+    {
+        public string Name => "deferred";
+
+        public string Description => "deferred";
+
+        public string ParametersJsonSchema => "{\"type\":\"object\"}";
+
+        public IDeferredPermissionExecutionContract DeferredPermissionContract => null!;
+
+        public int ExecutionCount { get; private set; }
+
+        public Task<AgentToolResult> ExecuteAsync(
+            JsonElement arguments,
+            AgentToolExecutionContext context,
+            CancellationToken cancellationToken)
+        {
+            ExecutionCount++;
+            return Task.FromResult(AgentToolResult.Success("unsafe"));
+        }
+    }
+
+    private sealed class BypassRegistry(IAgentTool tool) : IAgentToolRegistry
+    {
+        public bool TryGet(string name, out IAgentTool? resolved)
+        {
+            resolved = string.Equals(name, tool.Name, StringComparison.Ordinal) ? tool : null;
+            return resolved is not null;
+        }
+
+        public IReadOnlyList<ChatModelToolDefinition> GetDefinitions() => [];
     }
 
     private sealed class RecordingTool(string name, AgentToolResult result) : IAgentTool

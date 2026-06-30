@@ -28,7 +28,9 @@ public sealed class PermissionHostCompositionTests
         Assert.NotNull(host.Services.GetRequiredService<ISessionPermissionStore>());
         Assert.NotNull(host.Services.GetRequiredService<IProjectPermissionStore>());
         var registry = host.Services.GetRequiredService<IAgentToolRegistry>();
-        Assert.Equal(["glob", "grep", "read"], registry.GetDefinitions().Select(static tool => tool.Name));
+        Assert.Equal(
+            ["apply_patch", "edit", "glob", "grep", "multi_edit", "read", "write"],
+            registry.GetDefinitions().Select(static tool => tool.Name));
     }
 
     [Fact]
@@ -79,6 +81,57 @@ public sealed class PermissionHostCompositionTests
                 }));
 
         Assert.Contains("DefaultDecision", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Mutation_options_bind_without_changing_the_global_permission_default()
+    {
+        using var directory = new TemporaryDirectory();
+        var builder = AgentPulseHost.CreateBuilder(
+            new TestConsole(),
+            configuration =>
+            {
+                AddStorageConfiguration(configuration, directory.Path);
+                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    [$"{MutationToolOptions.SectionName}:MaxFileBytes"] = "4096",
+                    [$"{MutationToolOptions.SectionName}:MaxPatchBytes"] = "2048",
+                    [$"{MutationToolOptions.SectionName}:MaxDiffPreviewCharacters"] = "1024",
+                    [$"{MutationToolOptions.SectionName}:DiffContextLines"] = "2",
+                    [$"{MutationToolOptions.SectionName}:ProtectedPatterns:20"] = "private/**",
+                });
+            });
+
+        using var host = builder.Build();
+        var mutation = host.Services.GetRequiredService<MutationToolOptions>();
+        var permission = host.Services.GetRequiredService<PermissionOptions>();
+
+        Assert.Equal(4096, mutation.MaxFileBytes);
+        Assert.Equal(2048, mutation.MaxPatchBytes);
+        Assert.Equal(1024, mutation.MaxDiffPreviewCharacters);
+        Assert.Equal(2, mutation.DiffContextLines);
+        Assert.Contains("private/**", mutation.ProtectedPatterns);
+        Assert.Equal(PermissionDecision.Allow, permission.GetDefaultDecision());
+    }
+
+    [Fact]
+    public void Invalid_mutation_configuration_is_rejected_with_clear_message()
+    {
+        using var directory = new TemporaryDirectory();
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            AgentPulseHost.CreateBuilder(
+                new TestConsole(),
+                configuration =>
+                {
+                    AddStorageConfiguration(configuration, directory.Path);
+                    configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        [$"{MutationToolOptions.SectionName}:MaxFileBytes"] = "0",
+                    });
+                }));
+
+        Assert.Contains("greater than zero", exception.Message, StringComparison.Ordinal);
     }
 
     private static void AddStorageConfiguration(

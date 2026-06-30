@@ -17,6 +17,8 @@ public sealed record AgentToolExecutionContext
 
     public string WorkspaceRoot { get; }
 
+    public bool HasResourcePermissionAuthorizer => _resourcePermissionAuthorizer is not null;
+
     public Task<PermissionAuthorizationResult> AuthorizeResourceAsync(
         string operation,
         string target,

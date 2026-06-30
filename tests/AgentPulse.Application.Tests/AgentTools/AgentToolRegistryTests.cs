@@ -60,6 +60,54 @@ public sealed class AgentToolRegistryTests
         Assert.True(registry.TryGet("read", out _));
     }
 
+    [Fact]
+    public void Deferred_permission_tool_without_execution_contract_is_rejected()
+    {
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            new AgentToolRegistry([new DeferredStubTool(null!)]));
+
+        Assert.Contains(
+            "Deferred permission authorization is not configured",
+            exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Deferred_permission_tool_with_execution_contract_is_registered()
+    {
+        var contract = new DeferredContractStub();
+        var registry = new AgentToolRegistry([new DeferredStubTool(contract)]);
+
+        Assert.True(registry.TryGet("deferred", out var tool));
+        Assert.Same(contract, Assert.IsAssignableFrom<IDeferredPermissionAgentTool>(tool).DeferredPermissionContract);
+    }
+
+    private sealed class DeferredStubTool(IDeferredPermissionExecutionContract contract)
+        : IAgentTool, IDeferredPermissionAgentTool
+    {
+        public string Name => "deferred";
+
+        public string Description => "description";
+
+        public string ParametersJsonSchema => "{\"type\":\"object\"}";
+
+        public IDeferredPermissionExecutionContract DeferredPermissionContract { get; } = contract;
+
+        public Task<AgentToolResult> ExecuteAsync(
+            JsonElement arguments,
+            AgentToolExecutionContext context,
+            CancellationToken cancellationToken) => Task.FromResult(AgentToolResult.Success("ok"));
+    }
+
+    private sealed class DeferredContractStub : IDeferredPermissionExecutionContract
+    {
+        public Task<AgentToolResult> ExecuteAsync(
+            IAgentTool tool,
+            JsonElement arguments,
+            AgentToolExecutionContext context,
+            CancellationToken cancellationToken) => Task.FromResult(AgentToolResult.Success("ok"));
+    }
+
     private sealed class StubTool(string name) : IAgentTool
     {
         public string Name { get; } = name;

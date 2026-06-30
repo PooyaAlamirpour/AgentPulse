@@ -116,6 +116,29 @@ public sealed class ReadAgentToolTests
         Assert.Contains("maximum readable size", result.Error, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task Adds_sha256_encoding_and_line_ending_metadata_without_changing_text_output()
+    {
+        using var workspace = new TemporaryWorkspace();
+        var encoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: true);
+        var bytes = encoding.GetPreamble()
+            .Concat(encoding.GetBytes("one\r\ntwo\r\n"))
+            .ToArray();
+        await File.WriteAllBytesAsync(workspace.Path("metadata.txt"), bytes);
+        var tool = CreateTool();
+
+        var result = await ExecuteAsync(tool, workspace.Root, "{\"path\":\"metadata.txt\"}");
+
+        Assert.True(result.Succeeded);
+        Assert.Contains("1: one", result.Output, StringComparison.Ordinal);
+        Assert.Contains("2: two", result.Output, StringComparison.Ordinal);
+        Assert.Equal(
+            Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant(),
+            result.Metadata["sha256"]);
+        Assert.Equal("utf-8-bom", result.Metadata["encoding"]);
+        Assert.Equal("crlf", result.Metadata["lineEnding"]);
+    }
+
     private static ReadAgentTool CreateTool() => new(
         new WorkspacePathResolver(),
         new AgentToolOptions());

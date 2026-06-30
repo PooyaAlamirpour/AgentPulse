@@ -1,4 +1,5 @@
 using AgentPulse.Application.ChatModels;
+using AgentPulse.Application.AgentTools;
 using AgentPulse.Application.ProjectContexts;
 using AgentPulse.Domain.Messages;
 using Microsoft.Extensions.Logging;
@@ -12,14 +13,17 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
 
     private readonly IChatModelHistoryPolicy _historyPolicy;
     private readonly ILogger<ChatModelRequestBuilder> _logger;
+    private readonly int _maximumToolResultCharacters;
 
     public ChatModelRequestBuilder(
         IChatModelHistoryPolicy historyPolicy,
-        ILogger<ChatModelRequestBuilder>? logger = null)
+        ILogger<ChatModelRequestBuilder>? logger = null,
+        AgentToolOptions? toolOptions = null)
     {
         ArgumentNullException.ThrowIfNull(historyPolicy);
         _historyPolicy = historyPolicy;
         _logger = logger ?? NullLogger<ChatModelRequestBuilder>.Instance;
+        _maximumToolResultCharacters = (toolOptions ?? new AgentToolOptions()).MaxOutputCharacters;
     }
 
     public ChatModelRequest Build(ChatModelRequestBuildInput input)
@@ -252,7 +256,7 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         return filtered;
     }
 
-    private static ChatModelMessage ConvertMessage(
+    private ChatModelMessage ConvertMessage(
         Message message,
         bool isCurrentUserMessage)
     {
@@ -292,7 +296,7 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
         return new ChatModelMessage(ChatModelRole.Assistant, content);
     }
 
-    private static ChatModelMessage ConvertToolMessage(Message message)
+    private ChatModelMessage ConvertToolMessage(Message message)
     {
         var orderedParts = message.Parts.OrderBy(static part => part.Order).ToArray();
         if (orderedParts.Length != 1 || orderedParts[0] is not ToolResultMessagePart result)
@@ -302,12 +306,31 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
                 $"Tool message '{message.Id}' must contain exactly one tool result part.");
         }
 
+        var storedMetadata = ParseToolMetadata(result.MetadataJson);
+        var metadataValues = ExtractToolMetadataValues(storedMetadata);
+        var storedResult = result.Succeeded
+            ? AgentToolResult.Success(result.Output, metadataValues)
+            : AgentToolResult.Failure(
+                result.Error ?? "Tool failed.",
+                result.Output,
+                metadataValues,
+                AgentToolFailureClassification.Unknown);
+        var limit = AgentToolResultLimiter.Limit(
+            storedResult,
+            _maximumToolResultCharacters);
+        if (limit.WasLimited)
+        {
+            _logger.LogInformation(
+                "Oversized historical tool result limited for tool {ToolName}.",
+                result.ToolName);
+        }
+
         var content = System.Text.Json.JsonSerializer.Serialize(new
         {
-            success = result.Succeeded,
-            output = result.Output,
-            error = result.Error,
-            metadata = ParseToolMetadata(result.MetadataJson),
+            success = limit.Result.Succeeded,
+            output = limit.Result.Output,
+            error = limit.Result.Error,
+            metadata = RebuildToolMetadata(storedMetadata, limit.Result.Metadata),
         });
         return ChatModelMessage.CreateToolResult(result.ToolCallId, result.ToolName, content);
     }
@@ -330,6 +353,57 @@ public sealed class ChatModelRequestBuilder : IChatModelRequestBuilder
                 "A stored tool result contains invalid metadata JSON.",
                 exception);
         }
+    }
+
+    private static IReadOnlyDictionary<string, string> ExtractToolMetadataValues(
+        System.Text.Json.JsonElement? metadata)
+    {
+        if (!metadata.HasValue ||
+            metadata.Value.ValueKind != System.Text.Json.JsonValueKind.Object)
+        {
+            return new Dictionary<string, string>();
+        }
+
+        var value = metadata.Value;
+        var source = value.TryGetProperty("values", out var values) &&
+                     values.ValueKind == System.Text.Json.JsonValueKind.Object
+            ? values
+            : value;
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var property in source.EnumerateObject())
+        {
+            result[property.Name] = property.Value.ValueKind == System.Text.Json.JsonValueKind.String
+                ? property.Value.GetString() ?? string.Empty
+                : property.Value.GetRawText();
+        }
+
+        return result;
+    }
+
+    private static object? RebuildToolMetadata(
+        System.Text.Json.JsonElement? original,
+        IReadOnlyDictionary<string, string> values)
+    {
+        if (!original.HasValue ||
+            original.Value.ValueKind != System.Text.Json.JsonValueKind.Object ||
+            !original.Value.TryGetProperty("values", out _))
+        {
+            return values;
+        }
+
+        var metadata = original.Value;
+        var envelope = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["values"] = values,
+        };
+        if (metadata.TryGetProperty("durationMs", out var duration) &&
+            duration.ValueKind == System.Text.Json.JsonValueKind.Number &&
+            duration.TryGetDouble(out var durationMs))
+        {
+            envelope["durationMs"] = durationMs;
+        }
+
+        return envelope;
     }
 
     private static ChatModelRole ConvertRole(MessageRole role)
