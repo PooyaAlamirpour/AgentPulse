@@ -12,4 +12,5 @@ public enum ModelRunErrorCode
     UnexpectedFailure = 8,
     MaxToolIterationsReached = 9,
     InvalidAgentResponse = 10,
+    AgentNoProgress = 11,
 }

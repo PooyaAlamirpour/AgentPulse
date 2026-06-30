@@ -270,6 +270,10 @@ public sealed class CliErrorRenderer(
                 ExitCodes.Provider,
                 "The model returned neither a final response nor a valid tool call.",
                 "InvalidAgentResponse"),
+            ModelRunErrorCode.AgentNoProgress => new(
+                ExitCodes.Failure,
+                exception.Message,
+                "AgentNoProgress"),
             _ => new(
                 ExitCodes.Failure,
                 "The model run failed before completion.",

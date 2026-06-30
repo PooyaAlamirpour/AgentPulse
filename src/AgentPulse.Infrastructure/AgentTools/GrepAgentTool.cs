@@ -40,12 +40,12 @@ public sealed class GrepAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (string.IsNullOrWhiteSpace(input.Pattern))
         {
-            return AgentToolResult.Failure("The grep tool requires a regular expression pattern.");
+            return DeterministicFailure("The grep tool requires a regular expression pattern.");
         }
 
         Regex regex;
@@ -67,18 +67,18 @@ public sealed class GrepAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (!Directory.Exists(basePath) && !File.Exists(basePath))
         {
-            return AgentToolResult.Failure("The grep base path does not exist.");
+            return DeterministicFailure("The grep base path does not exist.");
         }
 
         var limit = Math.Min(input.MaxResults ?? options.MaxGrepResults, options.MaxGrepResults);
         if (limit <= 0)
         {
-            return AgentToolResult.Failure("Grep maxResults must be greater than zero.");
+            return DeterministicFailure("Grep maxResults must be greater than zero.");
         }
 
         var results = new List<string>();
@@ -140,7 +140,9 @@ public sealed class GrepAgentTool(
                 }
                 catch (RegexMatchTimeoutException)
                 {
-                    return AgentToolResult.Failure("The grep regular expression exceeded its match timeout.");
+                    return AgentToolResult.Failure(
+                        "The grep regular expression exceeded its match timeout.",
+                        classification: AgentToolFailureClassification.Transient);
                 }
 
                 if (!matched)
@@ -186,13 +188,13 @@ public sealed class GrepAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
 
         if (string.IsNullOrWhiteSpace(input.Pattern))
         {
             return PermissionTargetResolution.Reject(
-                AgentToolResult.Failure("The grep tool requires a regular expression pattern."));
+                DeterministicFailure("The grep tool requires a regular expression pattern."));
         }
 
         try
@@ -211,14 +213,14 @@ public sealed class GrepAgentTool(
             if (!Directory.Exists(basePath) && !File.Exists(basePath))
             {
                 return PermissionTargetResolution.Reject(
-                    AgentToolResult.Failure("The grep base path does not exist."));
+                    DeterministicFailure("The grep base path does not exist."));
             }
 
             var limit = Math.Min(input.MaxResults ?? options.MaxGrepResults, options.MaxGrepResults);
             if (limit <= 0)
             {
                 return PermissionTargetResolution.Reject(
-                    AgentToolResult.Failure("Grep maxResults must be greater than zero."));
+                    DeterministicFailure("Grep maxResults must be greater than zero."));
             }
 
             var relativeBase = Path.GetRelativePath(context.WorkspaceRoot, basePath).Replace('\\', '/');
@@ -235,9 +237,14 @@ public sealed class GrepAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
     }
+
+    private static AgentToolResult DeterministicFailure(string error) =>
+        AgentToolResult.Failure(
+            error,
+            classification: AgentToolFailureClassification.Deterministic);
 
     private static async Task<bool> IsBinaryAsync(string path, CancellationToken cancellationToken)
     {

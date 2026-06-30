@@ -686,6 +686,199 @@ public sealed class PermissionAgentLoopIntegrationTests
     }
 
     [Fact]
+    public async Task Repeated_non_interactive_glob_approval_failure_stops_before_max_iterations()
+    {
+        using var workspace = new TemporaryDirectory();
+        Directory.CreateDirectory(Path.Combine(workspace.Path, "restricted"));
+        await File.WriteAllTextAsync(
+            Path.Combine(workspace.Path, "restricted", "private.txt"),
+            "private-secret");
+        var prompt = new QueuePrompt(false);
+        var observer = new RecordingObserver();
+        var client = new ScriptedClient(
+            ToolResponse("call-1", "glob", "{\"pattern\":\"**/*\"}"),
+            ToolResponse("call-2", "glob", "{\"pattern\":\"**/*\"}"));
+        var loop = CreateLoop(
+            client,
+            CreateBuiltInTools(),
+            prompt,
+            SearchOptions("glob", "restricted/**", "Ask"),
+            workspace.Path);
+
+        var exception = await Assert.ThrowsAsync<AgentLoopException>(() => loop.ExecuteAsync(
+            CreateRequest(workspace.Path),
+            observer));
+
+        Assert.Equal(AgentLoopErrorCode.NoProgress, exception.Code);
+        Assert.Contains(
+            "Permission approval is required, but the current run is non-interactive.",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("maximum", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private-secret", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(2, client.Requests.Count);
+        Assert.Equal(2, observer.AssistantToolCallCount);
+        Assert.Equal(2, observer.Executions.Count);
+        Assert.All(observer.Executions, execution =>
+        {
+            Assert.False(execution.Result.Succeeded);
+            Assert.Equal(
+                AgentToolFailureClassification.Deterministic,
+                execution.Result.FailureClassification);
+            Assert.Equal(
+                "Permission approval is required, but the current run is non-interactive.",
+                execution.Result.Error);
+        });
+        Assert.Equal(0, prompt.CallCount);
+    }
+
+    [Fact]
+    public async Task Repeated_explicit_deny_stops_without_reading_the_file()
+    {
+        using var workspace = new TemporaryDirectory();
+        var tool = new CountingPermissionTool();
+        var observer = new RecordingObserver();
+        var client = new ScriptedClient(
+            ToolResponse("call-1", "read", "{}"),
+            ToolResponse("call-2", "read", "{}"));
+        var loop = CreateLoop(
+            client,
+            [tool],
+            new QueuePrompt(true),
+            new PermissionOptions
+            {
+                Rules =
+                [
+                    new PermissionRuleOptions
+                    {
+                        Tool = "read",
+                        Operation = "read",
+                        Target = "src/Program.cs",
+                        Decision = "Deny",
+                    },
+                ],
+            },
+            workspace.Path);
+
+        var exception = await Assert.ThrowsAsync<AgentLoopException>(() => loop.ExecuteAsync(
+            CreateRequest(workspace.Path),
+            observer));
+
+        Assert.Equal(AgentLoopErrorCode.NoProgress, exception.Code);
+        Assert.Contains("Permission denied", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, tool.ExecutionCount);
+        Assert.Equal(2, observer.Executions.Count);
+        Assert.All(observer.Executions, execution =>
+        {
+            Assert.False(execution.Result.Succeeded);
+            Assert.Equal(
+                AgentToolFailureClassification.Deterministic,
+                execution.Result.FailureClassification);
+        });
+    }
+
+    [Fact]
+    public async Task Repeated_invalid_read_arguments_stop_before_max_iterations()
+    {
+        using var workspace = new TemporaryDirectory();
+        var observer = new RecordingObserver();
+        var client = new ScriptedClient(
+            ToolResponse("call-1", "read", "{\"path\":\"\"}"),
+            ToolResponse("call-2", "read", "{\"path\":\"\"}"));
+        var loop = CreateLoop(
+            client,
+            CreateBuiltInTools(),
+            new QueuePrompt(true),
+            new PermissionOptions(),
+            workspace.Path);
+
+        var exception = await Assert.ThrowsAsync<AgentLoopException>(() => loop.ExecuteAsync(
+            CreateRequest(workspace.Path),
+            observer));
+
+        Assert.Equal(AgentLoopErrorCode.NoProgress, exception.Code);
+        Assert.Contains(
+            "The read tool requires a non-empty path.",
+            exception.Message,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("maximum", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(2, client.Requests.Count);
+        Assert.Equal(2, observer.Executions.Count);
+        Assert.All(observer.Executions, execution =>
+            Assert.Equal(
+                AgentToolFailureClassification.Deterministic,
+                execution.Result.FailureClassification));
+    }
+
+    [Fact]
+    public async Task Repeated_invalid_json_stops_without_repeated_tool_validation_or_execution()
+    {
+        using var workspace = new TemporaryDirectory();
+        var tool = new CountingPermissionTool();
+        var observer = new RecordingObserver();
+        var client = new ScriptedClient(
+            ToolResponse("call-1", "read", "{"),
+            ToolResponse("call-2", "read", "{"));
+        var loop = CreateLoop(
+            client,
+            [tool],
+            new QueuePrompt(true),
+            new PermissionOptions(),
+            workspace.Path);
+
+        var exception = await Assert.ThrowsAsync<AgentLoopException>(() => loop.ExecuteAsync(
+            CreateRequest(workspace.Path),
+            observer));
+
+        Assert.Equal(AgentLoopErrorCode.NoProgress, exception.Code);
+        Assert.Contains("Invalid JSON arguments", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, tool.ExecutionCount);
+        Assert.Equal(2, observer.Executions.Count);
+    }
+
+    [Fact]
+    public async Task Different_recovery_tool_executes_and_allows_the_agent_to_complete()
+    {
+        using var workspace = new TemporaryDirectory();
+        await File.WriteAllTextAsync(Path.Combine(workspace.Path, "visible.txt"), "visible");
+        var deniedRead = new CountingPermissionTool();
+        var options = new AgentToolOptions();
+        var glob = new GlobAgentTool(new WorkspacePathResolver(), options);
+        var observer = new RecordingObserver();
+        var client = new ScriptedClient(
+            ToolResponse("call-denied", "read", "{}"),
+            ToolResponse("call-recovery", "glob", "{\"pattern\":\"**/*.txt\"}"),
+            FinalResponse("recovered"));
+        var loop = CreateLoop(
+            client,
+            [deniedRead, glob],
+            new QueuePrompt(true),
+            new PermissionOptions
+            {
+                Rules =
+                [
+                    new PermissionRuleOptions
+                    {
+                        Tool = "read",
+                        Operation = "read",
+                        Target = "src/Program.cs",
+                        Decision = "Deny",
+                    },
+                ],
+            },
+            workspace.Path);
+
+        var result = await loop.ExecuteAsync(CreateRequest(workspace.Path), observer);
+
+        Assert.Equal("recovered", result.Text);
+        Assert.Equal(0, deniedRead.ExecutionCount);
+        Assert.Equal(2, observer.Executions.Count);
+        Assert.False(observer.Executions[0].Result.Succeeded);
+        Assert.True(observer.Executions[1].Result.Succeeded);
+        Assert.Contains("visible.txt", observer.Executions[1].Result.Output, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Cancellation_while_waiting_for_approval_prevents_tool_execution()
     {
         using var workspace = new TemporaryDirectory();

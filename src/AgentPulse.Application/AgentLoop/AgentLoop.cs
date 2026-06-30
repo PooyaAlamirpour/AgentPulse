@@ -29,6 +29,7 @@ public sealed class AgentLoop(
         var messages = request.Messages.ToList();
         var definitions = toolRegistry.GetDefinitions();
         var context = new AgentToolExecutionContext(request.WorkspaceRoot);
+        var repeatedFailureDetector = new RepeatedToolFailureDetector();
 
         logger.LogInformation(
             "Agent loop started with {ToolCount} active tools and maximum {MaxIterations} iterations.",
@@ -92,7 +93,9 @@ public sealed class AgentLoop(
                     request.SessionId,
                     request.ProjectId,
                     cancellationToken);
+
                 executions.Add(execution);
+                repeatedFailureDetector.Observe(execution);
                 messages.Add(ChatModelMessage.CreateToolResult(
                     call.Id,
                     call.Name,
@@ -101,6 +104,25 @@ public sealed class AgentLoop(
             }
 
             await observer.CompleteToolTurnAsync(iteration, cancellationToken);
+
+            var repeatedFailure = repeatedFailureDetector.CompleteTurn();
+            if (repeatedFailure is not null)
+            {
+                logger.LogWarning(
+                    "Repeated failed tool call detected for tool {ToolName}. Failure fingerprint {FailureFingerprint}; repetition count {RepetitionCount}.",
+                    repeatedFailure.ToolName,
+                    repeatedFailure.Fingerprint,
+                    repeatedFailure.Count);
+                logger.LogWarning(
+                    "Tool execution skipped because no progress was detected; further identical execution will not be attempted for tool {ToolName}.",
+                    repeatedFailure.ToolName);
+                logger.LogWarning(
+                    "Agent loop stopped because of deterministic repeated failure for tool {ToolName}.",
+                    repeatedFailure.ToolName);
+                throw new AgentLoopException(
+                    AgentLoopErrorCode.NoProgress,
+                    $"The agent stopped because it repeated the same failed tool call without making progress.{Environment.NewLine}{Environment.NewLine}Tool: {repeatedFailure.ToolName}{Environment.NewLine}Reason: {repeatedFailure.Reason}");
+            }
         }
 
         logger.LogWarning(
@@ -123,7 +145,9 @@ public sealed class AgentLoop(
 
         if (!toolRegistry.TryGet(call.Name, out var tool) || tool is null)
         {
-            result = AgentToolResult.Failure($"Unknown tool '{call.Name}'.");
+            result = AgentToolResult.Failure(
+                $"Unknown tool '{call.Name}'.",
+                classification: AgentToolFailureClassification.Deterministic);
         }
         else
         {
@@ -144,8 +168,10 @@ public sealed class AgentLoop(
                         cancellationToken);
                     if (!authorization.IsAllowed)
                     {
-                        result = authorization.Failure ?? AgentToolResult.Failure(
-                            $"Permission denied for tool '{call.Name}'.");
+                        result = ClassifyPermissionFailure(
+                            authorization,
+                            tool,
+                            call.Name);
                         stopwatch.Stop();
                         result = LimitOutput(result);
                         logger.LogInformation(
@@ -174,7 +200,8 @@ public sealed class AgentLoop(
             catch (JsonException exception)
             {
                 result = AgentToolResult.Failure(
-                    $"Invalid JSON arguments for tool '{call.Name}': {exception.Message}");
+                    $"Invalid JSON arguments for tool '{call.Name}': {exception.Message}",
+                    classification: AgentToolFailureClassification.Deterministic);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -183,7 +210,8 @@ public sealed class AgentLoop(
             catch (OperationCanceledException)
             {
                 result = AgentToolResult.Failure(
-                    $"Tool '{call.Name}' exceeded the timeout of {options.ToolTimeout}.");
+                    $"Tool '{call.Name}' exceeded the timeout of {options.ToolTimeout}.",
+                    classification: AgentToolFailureClassification.Transient);
             }
             catch (Exception exception)
             {
@@ -200,6 +228,37 @@ public sealed class AgentLoop(
             stopwatch.Elapsed.TotalMilliseconds,
             result.Succeeded);
         return new AgentLoopToolExecution(call, result, stopwatch.Elapsed);
+    }
+
+    private static AgentToolResult ClassifyPermissionFailure(
+        PermissionAuthorizationResult authorization,
+        IAgentTool tool,
+        string toolName)
+    {
+        var failure = authorization.Failure ?? AgentToolResult.Failure(
+            $"Permission denied for tool '{toolName}'.");
+        if (failure.FailureClassification != AgentToolFailureClassification.Unknown)
+        {
+            return failure;
+        }
+
+        var classification = authorization.Status switch
+        {
+            PermissionAuthorizationStatus.ExplicitlyDenied or
+                PermissionAuthorizationStatus.ApprovalUnavailable or
+                PermissionAuthorizationStatus.InvalidApproval =>
+                AgentToolFailureClassification.Deterministic,
+            PermissionAuthorizationStatus.InfrastructureFailure
+                when tool is not IPermissionAwareAgentTool =>
+                AgentToolFailureClassification.Deterministic,
+            _ => AgentToolFailureClassification.Unknown,
+        };
+
+        return AgentToolResult.Failure(
+            failure.Error ?? $"Permission denied for tool '{toolName}'.",
+            failure.Output,
+            failure.Metadata,
+            classification);
     }
 
     private AgentToolResult LimitOutput(AgentToolResult result)
@@ -219,7 +278,11 @@ public sealed class AgentLoop(
 
         return result.Succeeded
             ? AgentToolResult.Success(output, metadata)
-            : AgentToolResult.Failure(result.Error ?? "Tool failed.", output, metadata);
+            : AgentToolResult.Failure(
+                result.Error ?? "Tool failed.",
+                output,
+                metadata,
+                result.FailureClassification);
     }
 
     private static string SerializeToolResult(AgentToolResult result)
@@ -242,13 +305,13 @@ public sealed class AgentLoop(
         PermissionAuthorizationContext authorizationContext)
         : IAgentToolResourcePermissionAuthorizer
     {
-        public Task<PermissionAuthorizationResult> AuthorizeAsync(
+        public async Task<PermissionAuthorizationResult> AuthorizeAsync(
             string operation,
             string target,
             string? description,
             CancellationToken cancellationToken)
         {
-            return permissionGate.AuthorizeResourceAsync(
+            var authorization = await permissionGate.AuthorizeResourceAsync(
                 tool,
                 operation,
                 target,
@@ -258,6 +321,15 @@ public sealed class AgentLoop(
                 projectId,
                 authorizationContext,
                 cancellationToken);
+            if (authorization.IsAllowed)
+            {
+                return authorization;
+            }
+
+            return PermissionAuthorizationResult.Reject(
+                ClassifyPermissionFailure(authorization, tool, tool.Name),
+                authorization.Resolution,
+                authorization.Status);
         }
     }
 }

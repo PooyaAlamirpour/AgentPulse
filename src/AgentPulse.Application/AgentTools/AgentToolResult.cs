@@ -6,13 +6,15 @@ public sealed record AgentToolResult
         bool succeeded,
         string output,
         string? error,
-        IReadOnlyDictionary<string, string> metadata)
+        IReadOnlyDictionary<string, string> metadata,
+        AgentToolFailureClassification failureClassification)
     {
         Succeeded = succeeded;
         Output = output;
         Error = error;
         Metadata = new System.Collections.ObjectModel.ReadOnlyDictionary<string, string>(
             new Dictionary<string, string>(metadata, StringComparer.Ordinal));
+        FailureClassification = failureClassification;
     }
 
     public bool Succeeded { get; }
@@ -23,6 +25,8 @@ public sealed record AgentToolResult
 
     public IReadOnlyDictionary<string, string> Metadata { get; }
 
+    public AgentToolFailureClassification FailureClassification { get; }
+
     public static AgentToolResult Success(
         string output,
         IReadOnlyDictionary<string, string>? metadata = null)
@@ -32,20 +36,32 @@ public sealed record AgentToolResult
             true,
             output,
             null,
-            metadata ?? new Dictionary<string, string>());
+            metadata ?? new Dictionary<string, string>(),
+            AgentToolFailureClassification.None);
     }
 
     public static AgentToolResult Failure(
         string error,
         string output = "",
-        IReadOnlyDictionary<string, string>? metadata = null)
+        IReadOnlyDictionary<string, string>? metadata = null,
+        AgentToolFailureClassification classification = AgentToolFailureClassification.Unknown)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(error);
         ArgumentNullException.ThrowIfNull(output);
+        if (!Enum.IsDefined(classification) ||
+            classification == AgentToolFailureClassification.None)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(classification),
+                classification,
+                "A failed tool result must have a defined non-success classification.");
+        }
+
         return new AgentToolResult(
             false,
             output,
             error.Trim(),
-            metadata ?? new Dictionary<string, string>());
+            metadata ?? new Dictionary<string, string>(),
+            classification);
     }
 }

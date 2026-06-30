@@ -212,6 +212,8 @@ public sealed class ToolCallingRunPrompt(
                     ModelRunErrorCode.InvalidAgentResponse,
                 AgentLoopErrorCode.ProviderFailure =>
                     ModelRunErrorCode.ProviderFailure,
+                AgentLoopErrorCode.NoProgress =>
+                    ModelRunErrorCode.AgentNoProgress,
                 _ => ModelRunErrorCode.UnexpectedFailure,
             };
             return new ModelRunException(code, GetPublicFailureMessage(exception), exception);
@@ -238,6 +240,8 @@ public sealed class ToolCallingRunPrompt(
             "The agent reached the configured maximum number of tool iterations.",
         AgentLoopException { Code: AgentLoopErrorCode.InvalidResponse } =>
             "The model returned an invalid agent response.",
+        AgentLoopException { Code: AgentLoopErrorCode.NoProgress } noProgress =>
+            noProgress.Message,
         AgentLoopException => "The agent loop failed before completion.",
         ChatModelRequestException =>
             "The model request could not be built from the stored session history.",

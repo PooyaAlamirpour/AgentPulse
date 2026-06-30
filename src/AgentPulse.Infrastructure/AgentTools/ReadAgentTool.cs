@@ -33,19 +33,19 @@ public sealed class ReadAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (string.IsNullOrWhiteSpace(input.Path))
         {
-            return AgentToolResult.Failure("The read tool requires a non-empty path.");
+            return DeterministicFailure("The read tool requires a non-empty path.");
         }
 
         var offset = input.Offset ?? 1;
         var requestedLimit = input.Limit ?? options.MaxReadLines;
         if (offset <= 0 || requestedLimit <= 0)
         {
-            return AgentToolResult.Failure("Read offset and limit must be greater than zero.");
+            return DeterministicFailure("Read offset and limit must be greater than zero.");
         }
 
         var limit = Math.Min(requestedLimit, options.MaxReadLines);
@@ -56,20 +56,20 @@ public sealed class ReadAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (!File.Exists(path))
         {
             return Directory.Exists(path)
-                ? AgentToolResult.Failure("The requested read path is a directory, not a file.")
-                : AgentToolResult.Failure("The requested file does not exist.");
+                ? DeterministicFailure("The requested read path is a directory, not a file.")
+                : DeterministicFailure("The requested file does not exist.");
         }
 
         var fileLength = new FileInfo(path).Length;
         if (fileLength > options.MaxReadableFileBytes)
         {
-            return AgentToolResult.Failure(
+            return DeterministicFailure(
                 $"The requested file is {fileLength} bytes and exceeds the maximum readable size of {options.MaxReadableFileBytes} bytes.");
         }
 
@@ -155,13 +155,13 @@ public sealed class ReadAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
 
         if (string.IsNullOrWhiteSpace(input.Path))
         {
             return PermissionTargetResolution.Reject(
-                AgentToolResult.Failure("The read tool requires a non-empty path."));
+                DeterministicFailure("The read tool requires a non-empty path."));
         }
 
         var offset = input.Offset ?? 1;
@@ -169,7 +169,7 @@ public sealed class ReadAgentTool(
         if (offset <= 0 || requestedLimit <= 0)
         {
             return PermissionTargetResolution.Reject(
-                AgentToolResult.Failure("Read offset and limit must be greater than zero."));
+                DeterministicFailure("Read offset and limit must be greater than zero."));
         }
 
         try
@@ -179,8 +179,8 @@ public sealed class ReadAgentTool(
             {
                 return PermissionTargetResolution.Reject(
                     Directory.Exists(path)
-                        ? AgentToolResult.Failure("The requested read path is a directory, not a file.")
-                        : AgentToolResult.Failure("The requested file does not exist."));
+                        ? DeterministicFailure("The requested read path is a directory, not a file.")
+                        : DeterministicFailure("The requested file does not exist."));
             }
 
             var relative = Path.GetRelativePath(context.WorkspaceRoot, path).Replace('\\', '/');
@@ -191,9 +191,14 @@ public sealed class ReadAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
     }
+
+    private static AgentToolResult DeterministicFailure(string error) =>
+        AgentToolResult.Failure(
+            error,
+            classification: AgentToolFailureClassification.Deterministic);
 
     private sealed record ReadArguments(string? Path, int? Offset, int? Limit);
 }

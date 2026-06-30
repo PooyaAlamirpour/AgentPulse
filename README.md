@@ -131,6 +131,8 @@ A model response may contain multiple tool calls. They are executed sequentially
 
 `MaxToolIterations` prevents an unbounded conversation. Reaching the configured limit ends the run with a specific application error rather than continuing indefinitely.
 
+AgentPulse stops repeated deterministic tool failures early instead of consuming the full tool-iteration limit.
+
 ## Built-in Tools
 
 All built-in tools are **read-only**. Every path is normalized against the active workspace. Parent traversal, absolute paths outside the workspace, separator variations, and existing symbolic-link or junction escapes are rejected. `.git`, `bin`, and `obj` directories are skipped during workspace scans.

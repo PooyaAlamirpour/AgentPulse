@@ -37,12 +37,12 @@ public sealed class GlobAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (string.IsNullOrWhiteSpace(input.Pattern))
         {
-            return AgentToolResult.Failure("The glob tool requires a pattern.");
+            return DeterministicFailure("The glob tool requires a pattern.");
         }
 
         GlobPattern matcher;
@@ -54,18 +54,18 @@ public sealed class GlobAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return AgentToolResult.Failure(exception.Message);
+            return DeterministicFailure(exception.Message);
         }
 
         if (!Directory.Exists(basePath) && !File.Exists(basePath))
         {
-            return AgentToolResult.Failure("The glob base path does not exist.");
+            return DeterministicFailure("The glob base path does not exist.");
         }
 
         var limit = Math.Min(input.MaxResults ?? options.MaxGlobResults, options.MaxGlobResults);
         if (limit <= 0)
         {
-            return AgentToolResult.Failure("Glob maxResults must be greater than zero.");
+            return DeterministicFailure("Glob maxResults must be greater than zero.");
         }
 
         var candidates = WorkspaceFileEnumerator
@@ -143,13 +143,13 @@ public sealed class GlobAgentTool(
         }
         catch (ArgumentException exception)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
 
         if (string.IsNullOrWhiteSpace(input.Pattern))
         {
             return PermissionTargetResolution.Reject(
-                AgentToolResult.Failure("The glob tool requires a pattern."));
+                DeterministicFailure("The glob tool requires a pattern."));
         }
 
         try
@@ -159,14 +159,14 @@ public sealed class GlobAgentTool(
             if (!Directory.Exists(basePath) && !File.Exists(basePath))
             {
                 return PermissionTargetResolution.Reject(
-                    AgentToolResult.Failure("The glob base path does not exist."));
+                    DeterministicFailure("The glob base path does not exist."));
             }
 
             var limit = Math.Min(input.MaxResults ?? options.MaxGlobResults, options.MaxGlobResults);
             if (limit <= 0)
             {
                 return PermissionTargetResolution.Reject(
-                    AgentToolResult.Failure("Glob maxResults must be greater than zero."));
+                    DeterministicFailure("Glob maxResults must be greater than zero."));
             }
 
             var relativeBase = Path.GetRelativePath(context.WorkspaceRoot, basePath).Replace('\\', '/');
@@ -181,9 +181,14 @@ public sealed class GlobAgentTool(
         }
         catch (Exception exception) when (exception is ArgumentException or UnauthorizedAccessException)
         {
-            return PermissionTargetResolution.Reject(AgentToolResult.Failure(exception.Message));
+            return PermissionTargetResolution.Reject(DeterministicFailure(exception.Message));
         }
     }
+
+    private static AgentToolResult DeterministicFailure(string error) =>
+        AgentToolResult.Failure(
+            error,
+            classification: AgentToolFailureClassification.Deterministic);
 
     private sealed record GlobArguments(string? Pattern, string? BasePath, int? MaxResults);
 }
